@@ -1,0 +1,26 @@
+model:
+  name: /data/home/yuhan/model_zoo/Qwen3-8B
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  timeout_s: 300
+
+locomo:
+  data_path: data/locomo/locomo10.json
+  split_path: data/locomo/splits.json
+  warmup_size: 40
+  train_size: 40
+  seed: 13
+
+evolution:
+  split: train
+  limit: 40
+  scaffolds:
+    - bm25
+    - amem
+    - mem0
+  candidate_top_k:
+    - 4
+    - 8
+    - 12
+  max_context_chars: 6000
+  output_dir: runs/locomo_memory_scaffold_run

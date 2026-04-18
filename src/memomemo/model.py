@@ -1,0 +1,123 @@
+"""OpenAI-compatible local model client."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from memomemo.schemas import RetrievalHit
+from memomemo.utils.text import estimate_tokens
+
+
+DEFAULT_MODEL = "/data/home/yuhan/model_zoo/Qwen3-8B"
+DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1"
+
+
+@dataclass(frozen=True)
+class ModelResponse:
+    """Text plus usage returned by a model call."""
+
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+
+
+class LocalModelClient:
+    """Synchronous OpenAI-compatible chat-completions client."""
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_MODEL,
+        base_url: str = DEFAULT_BASE_URL,
+        api_key: str = "EMPTY",
+        timeout_s: int = 300,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout_s = timeout_s
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 256,
+        temperature: float = 0.0,
+    ) -> ModelResponse:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        response = httpx.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            timeout=self.timeout_s,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        message = data["choices"][0]["message"]
+        content = str(message.get("content") or "")
+        usage = data.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or estimate_tokens(_messages_text(messages)))
+        completion_tokens = int(usage.get("completion_tokens") or estimate_tokens(content))
+        return ModelResponse(
+            content=content,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+
+def build_answer_messages(
+    *,
+    question: str,
+    hits: list[RetrievalHit],
+    max_context_chars: int = 6000,
+) -> list[dict[str, str]]:
+    """Build a grounded QA prompt from retrieved memory hits."""
+
+    if not hits:
+        return [
+            {
+                "role": "system",
+                "content": "Answer the question. End with exactly one line: FINAL ANSWER: <answer>",
+            },
+            {
+                "role": "user",
+                "content": f"Question: {question}",
+            },
+        ]
+
+    context_parts: list[str] = []
+    used = 0
+    for idx, hit in enumerate(hits, start=1):
+        block = f"[{idx}] {hit.text}"
+        if used + len(block) > max_context_chars:
+            break
+        context_parts.append(block)
+        used += len(block)
+    context = "\n\n".join(context_parts)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You answer questions using only the retrieved memory context. "
+                "If the context is insufficient, answer unknown. End with "
+                "exactly one line: FINAL ANSWER: <answer>"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Retrieved memory:\n{context}\n\nQuestion: {question}",
+        },
+    ]
+
+
+def _messages_text(messages: list[dict[str, str]]) -> str:
+    return "\n".join(f"{msg.get('role', '')}: {msg.get('content', '')}" for msg in messages)

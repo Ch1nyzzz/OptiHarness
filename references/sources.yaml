@@ -1,0 +1,14 @@
+rank_bm25:
+  url: https://github.com/dorianbrown/rank_bm25.git
+  adapter: memomemo.scaffolds.bm25_scaffold.RankBM25Scaffold
+  role: Lexical BM25 retrieval scaffold.
+
+a_mem:
+  url: https://github.com/WujiangXu/A-mem.git
+  adapter: memomemo.scaffolds.amem_scaffold.AtomicMemoryScaffold
+  role: Atomic memory scaffold with entity and temporal retrieval signals.
+
+mem0:
+  url: https://github.com/mem0ai/mem0.git
+  adapter: memomemo.scaffolds.mem0_scaffold.Mem0StyleScaffold
+  role: Fact memory scaffold with speaker/entity-aware retrieval.
