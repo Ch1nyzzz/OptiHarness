@@ -11,11 +11,16 @@ from memomemo.baseline import (
     DEFAULT_BASELINE_SPLITS,
     run_baseline_suite,
 )
-from memomemo.evolution import run_initial_frontier
+from memomemo.evaluation import run_initial_frontier
 from memomemo.locomo import prepare_locomo
 from memomemo.model import DEFAULT_BASE_URL, DEFAULT_MODEL
 from memomemo.optimizer import MemoOptimizer, OptimizerConfig
-from memomemo.scaffolds import DEFAULT_MEMORY_SCAFFOLDS, DEFAULT_SCAFFOLD_TOP_KS, available_scaffolds
+from memomemo.scaffolds import (
+    DEFAULT_BASELINE_SCAFFOLDS,
+    DEFAULT_EVOLUTION_SEED_SCAFFOLDS,
+    DEFAULT_SCAFFOLD_TOP_KS,
+    available_scaffolds,
+)
 
 
 def main() -> int:
@@ -28,8 +33,13 @@ def main() -> int:
     prepare.add_argument("--source", type=Path, default=None)
     prepare.add_argument("--dest", type=Path, default=None)
     prepare.add_argument("--allow-download", action="store_true")
-    prepare.add_argument("--warmup-size", type=int, default=40)
-    prepare.add_argument("--train-size", type=int, default=40)
+    prepare.add_argument("--warmup-size", type=int, default=0)
+    prepare.add_argument("--train-size", type=int, default=80)
+    prepare.add_argument(
+        "--train-sample-id",
+        default="auto",
+        help="Sample id to draw the train split from, or 'auto' for the largest available sample.",
+    )
     prepare.add_argument("--seed", type=int, default=13)
 
     evolve = subparsers.add_parser("evolve")
@@ -44,13 +54,19 @@ def main() -> int:
     evolve.add_argument("--max-context-chars", type=int, default=6000)
     evolve.add_argument("--eval-workers", type=int, default=1)
     evolve.add_argument(
+        "--pareto-quality-threshold",
+        type=float,
+        default=0.125,
+        help="Passrate gap above which lower-quality cheap candidates are excluded from Pareto.",
+    )
+    evolve.add_argument(
         "--force",
         action="store_true",
         help="Rerun existing candidate result files instead of reusing them.",
     )
     evolve.add_argument(
         "--scaffolds",
-        default=",".join(DEFAULT_MEMORY_SCAFFOLDS),
+        default=",".join(DEFAULT_EVOLUTION_SEED_SCAFFOLDS),
         help=f"Comma-separated scaffolds. Available: {', '.join(available_scaffolds())}",
     )
     evolve.add_argument(
@@ -58,8 +74,13 @@ def main() -> int:
         default=None,
         help=(
             "Comma-separated top-k variants. Omit to use fixed scaffold defaults: "
-            f"{_format_scaffold_top_k_defaults()}."
+            f"{_format_scaffold_top_k_defaults(DEFAULT_EVOLUTION_SEED_SCAFFOLDS)}."
         ),
+    )
+    evolve.add_argument(
+        "--scaffold-extra-json",
+        default=None,
+        help="JSON object of per-scaffold extra config, or @path to a JSON file.",
     )
 
     baseline = subparsers.add_parser("baseline")
@@ -80,7 +101,7 @@ def main() -> int:
     baseline.add_argument("--eval-workers", type=int, default=1)
     baseline.add_argument(
         "--scaffolds",
-        default=",".join(DEFAULT_MEMORY_SCAFFOLDS),
+        default=",".join(DEFAULT_BASELINE_SCAFFOLDS),
         help=f"Comma-separated scaffolds. Available: {', '.join(available_scaffolds())}",
     )
     baseline.add_argument(
@@ -88,8 +109,13 @@ def main() -> int:
         default=None,
         help=(
             "Comma-separated top-k variants. Omit to use fixed scaffold defaults: "
-            f"{_format_scaffold_top_k_defaults()}."
+            f"{_format_scaffold_top_k_defaults(DEFAULT_BASELINE_SCAFFOLDS)}."
         ),
+    )
+    baseline.add_argument(
+        "--scaffold-extra-json",
+        default=None,
+        help="JSON object of per-scaffold extra config, or @path to a JSON file.",
     )
     baseline.add_argument(
         "--force",
@@ -99,7 +125,7 @@ def main() -> int:
 
     optimize = subparsers.add_parser("optimize")
     optimize.add_argument("--run-id", default="locomo_memory_opt")
-    optimize.add_argument("--iterations", type=int, default=3)
+    optimize.add_argument("--iterations", type=int, default=20)
     optimize.add_argument("--split", choices=("warmup", "train", "test"), default="train")
     optimize.add_argument("--limit", type=int, default=40)
     optimize.add_argument("--out", type=Path, default=None)
@@ -112,6 +138,31 @@ def main() -> int:
     optimize.add_argument("--dry-run", action="store_true")
     optimize.add_argument("--max-context-chars", type=int, default=6000)
     optimize.add_argument("--eval-workers", type=int, default=1)
+    optimize.add_argument(
+        "--scaffolds",
+        default=",".join(DEFAULT_EVOLUTION_SEED_SCAFFOLDS),
+        help=f"Comma-separated seed scaffolds. Available: {', '.join(available_scaffolds())}",
+    )
+    optimize.add_argument(
+        "--scaffold-extra-json",
+        default=None,
+        help="JSON object of per-scaffold seed extra config, or @path to a JSON file.",
+    )
+    optimize.add_argument(
+        "--selection-policy",
+        choices=("default", "ucb"),
+        default="default",
+        help="Use the default proposer loop or UCB-guided parent/context selection.",
+    )
+    optimize.add_argument("--ucb-exploration-c", type=float, default=0.6)
+    optimize.add_argument("--ucb-alpha", type=float, default=0.25)
+    optimize.add_argument("--ucb-gamma", type=float, default=0.95)
+    optimize.add_argument(
+        "--pareto-quality-threshold",
+        type=float,
+        default=0.125,
+        help="Passrate gap above which lower-quality cheap candidates are excluded from Pareto.",
+    )
     optimize.add_argument(
         "--skip-scaffold-eval",
         action="store_true",
@@ -132,6 +183,7 @@ def main() -> int:
             allow_download=args.allow_download,
             warmup_size=args.warmup_size,
             train_size=args.train_size,
+            train_sample_id=args.train_sample_id,
             seed=args.seed,
         )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -140,12 +192,14 @@ def main() -> int:
     if args.command == "evolve":
         selected_scaffolds = _csv(args.scaffolds)
         top_k = None if args.top_k is None else [int(item) for item in _csv(args.top_k)]
+        scaffold_extra = _scaffold_extra(args.scaffold_extra_json)
         payload = run_initial_frontier(
             split=args.split,
             limit=args.limit,
             out_dir=args.out,
             scaffolds=selected_scaffolds,
             top_k_variants=top_k,
+            scaffold_extra=scaffold_extra,
             model=args.model,
             base_url=args.base_url,
             api_key=args.api_key,
@@ -154,6 +208,7 @@ def main() -> int:
             max_context_chars=args.max_context_chars,
             max_eval_workers=args.eval_workers,
             force=args.force,
+            pareto_quality_threshold=args.pareto_quality_threshold,
         )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
@@ -162,6 +217,7 @@ def main() -> int:
         selected_splits = _csv(args.splits)
         selected_scaffolds = _csv(args.scaffolds)
         top_k = None if args.top_k is None else [int(item) for item in _csv(args.top_k)]
+        scaffold_extra = _scaffold_extra(args.scaffold_extra_json)
         payload = run_baseline_suite(
             out_dir=args.out,
             splits=selected_splits,
@@ -169,6 +225,7 @@ def main() -> int:
             limit=args.limit,
             scaffolds=selected_scaffolds,
             top_k_variants=top_k,
+            scaffold_extra=scaffold_extra,
             model=args.model,
             base_url=args.base_url,
             api_key=args.api_key,
@@ -183,6 +240,8 @@ def main() -> int:
 
     if args.command == "optimize":
         out_dir = args.out or Path("runs") / args.run_id
+        selected_scaffolds = _csv(args.scaffolds)
+        scaffold_extra = _scaffold_extra(args.scaffold_extra_json)
         optimizer = MemoOptimizer(
             OptimizerConfig(
                 run_id=args.run_id,
@@ -201,6 +260,13 @@ def main() -> int:
                 max_eval_workers=args.eval_workers,
                 skip_scaffold_eval=args.skip_scaffold_eval,
                 baseline_dir=args.baseline_dir,
+                scaffolds=tuple(selected_scaffolds),
+                scaffold_extra=scaffold_extra,
+                selection_policy=args.selection_policy,
+                ucb_exploration_c=args.ucb_exploration_c,
+                ucb_alpha=args.ucb_alpha,
+                ucb_gamma=args.ucb_gamma,
+                pareto_quality_threshold=args.pareto_quality_threshold,
             )
         )
         payload = optimizer.run()
@@ -214,10 +280,25 @@ def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _format_scaffold_top_k_defaults() -> str:
+def _scaffold_extra(value: str | None) -> dict[str, dict[str, object]]:
+    if not value:
+        return {}
+    text = Path(value[1:]).read_text(encoding="utf-8") if value.startswith("@") else value
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("--scaffold-extra-json must be a JSON object")
+    out: dict[str, dict[str, object]] = {}
+    for name, extra in payload.items():
+        if not isinstance(extra, dict):
+            raise ValueError(f"extra config for {name!r} must be a JSON object")
+        out[str(name)] = dict(extra)
+    return out
+
+
+def _format_scaffold_top_k_defaults(scaffolds: tuple[str, ...]) -> str:
     return ", ".join(
         f"{scaffold}=top{DEFAULT_SCAFFOLD_TOP_KS[scaffold]}"
-        for scaffold in DEFAULT_MEMORY_SCAFFOLDS
+        for scaffold in scaffolds
     )
 
 

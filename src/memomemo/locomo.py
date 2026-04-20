@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,9 @@ def prepare_locomo(
     dest: Path | None = None,
     source: Path | None = None,
     allow_download: bool = False,
-    warmup_size: int = 40,
-    train_size: int = 40,
+    warmup_size: int = 0,
+    train_size: int = 80,
+    train_sample_id: str | None = "auto",
     seed: int = 13,
 ) -> dict[str, Any]:
     """Materialize LOCOMO under MemoMemo and write deterministic splits."""
@@ -64,6 +66,7 @@ def prepare_locomo(
         examples,
         warmup_size=warmup_size,
         train_size=train_size,
+        train_sample_id=train_sample_id,
         seed=seed,
     )
     split_path = default_split_path()
@@ -78,6 +81,7 @@ def prepare_locomo(
         "warmup_size": len(split_payload["splits"]["warmup"]),
         "train_size": len(split_payload["splits"]["train"]),
         "test_size": len(split_payload["splits"]["test"]),
+        "train_sample_id": split_payload.get("train_sample_id"),
     }
 
 
@@ -155,6 +159,10 @@ def flatten_conversation(conversation: dict[str, Any]) -> list[ConversationTurn]
         date = str(conversation.get(f"{session}_date_time", "") or "")
         for raw in conversation.get(session, []) or []:
             text = str(raw.get("text", "") or "")
+            caption = str(raw.get("blip_caption", "") or "")
+            if caption and raw.get("img_url"):
+                image_text = f"[Image: {caption}]"
+                text = f"{image_text} {text}" if text else image_text
             if not text:
                 continue
             turns.append(
@@ -173,22 +181,40 @@ def flatten_conversation(conversation: dict[str, Any]) -> list[ConversationTurn]
 def build_splits(
     examples: list[LocomoExample],
     *,
-    warmup_size: int = 40,
-    train_size: int = 40,
+    warmup_size: int = 0,
+    train_size: int = 80,
+    train_sample_id: str | None = "auto",
     seed: int = 13,
 ) -> dict[str, Any]:
     """Build deterministic warmup/train/test splits."""
 
     task_ids = [example.task_id for example in examples]
+    task_to_sample = {example.task_id: example.sample_id for example in examples}
     shuffled = list(task_ids)
     random.Random(seed).shuffle(shuffled)
     warmup = shuffled[:warmup_size]
-    train = shuffled[warmup_size : warmup_size + train_size]
-    test = shuffled[warmup_size + train_size :]
+    selected_train_sample = _resolve_train_sample_id(
+        examples,
+        train_sample_id=train_sample_id,
+        excluded_task_ids=set(warmup),
+        train_size=train_size,
+    )
+    if selected_train_sample is None:
+        train = shuffled[warmup_size : warmup_size + train_size]
+    else:
+        warmup_ids = set(warmup)
+        train = [
+            task_id
+            for task_id in shuffled
+            if task_to_sample[task_id] == selected_train_sample and task_id not in warmup_ids
+        ][:train_size]
+    used = set(warmup) | set(train)
+    test = [task_id for task_id in shuffled if task_id not in used]
     return {
         "benchmark": "locomo",
         "seed": seed,
         "total": len(task_ids),
+        "train_sample_id": selected_train_sample,
         "splits": {
             "warmup": warmup,
             "train": train,
@@ -212,6 +238,39 @@ def select_split(
     ids = payload["splits"][split]
     by_id = {example.task_id: example for example in examples}
     return [by_id[item] for item in ids if item in by_id]
+
+
+def _resolve_train_sample_id(
+    examples: list[LocomoExample],
+    *,
+    train_sample_id: str | None,
+    excluded_task_ids: set[str],
+    train_size: int,
+) -> str | None:
+    if not train_sample_id:
+        return None
+
+    available = Counter(
+        example.sample_id
+        for example in examples
+        if example.task_id not in excluded_task_ids
+    )
+    if train_sample_id == "auto":
+        enough = [
+            (count, sample_id)
+            for sample_id, count in available.items()
+            if count >= train_size
+        ]
+        if not enough:
+            raise ValueError(f"no LOCOMO sample has {train_size} train examples after warmup")
+        return max(enough, key=lambda item: (item[0], item[1]))[1]
+
+    if available[train_sample_id] < train_size:
+        raise ValueError(
+            f"LOCOMO sample {train_sample_id!r} has only {available[train_sample_id]} "
+            f"available train examples after warmup; need {train_size}"
+        )
+    return train_sample_id
 
 
 def _local_skillevolve_cache() -> Path | None:

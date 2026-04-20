@@ -78,6 +78,12 @@ class RankBM25Scaffold(RetrievalMemoryScaffold):
         if not query:
             return []
         scores = list(state.bm25.get_scores(query))
+        if not any(score > 0 for score in scores):
+            query_set = set(query)
+            scores = [
+                float(len(query_set & set(doc_tokens)))
+                for doc_tokens in state.tokenized_docs
+            ]
         ranked = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)
         anchors = [idx for idx in ranked[: max(1, config.top_k)] if scores[idx] > 0]
         selected = _expand_indices(anchors, len(state.turns), config.window)
@@ -95,7 +101,7 @@ class RankBM25Scaffold(RetrievalMemoryScaffold):
 def _expand_indices(anchors: list[int], n: int, window: int) -> list[int]:
     seen: set[int] = set()
     out: list[int] = []
-    for anchor in sorted(anchors):
+    for anchor in anchors:
         for idx in range(max(0, anchor - window), min(n, anchor + window + 1)):
             if idx not in seen:
                 seen.add(idx)

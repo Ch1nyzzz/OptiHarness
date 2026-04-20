@@ -78,15 +78,17 @@ def build_answer_messages(
     *,
     question: str,
     hits: list[RetrievalHit],
+    category: int | None = None,
     max_context_chars: int = 6000,
 ) -> list[dict[str, str]]:
     """Build a grounded QA prompt from retrieved memory hits."""
 
+    answer_instruction = _locomo_answer_instruction(category)
     if not hits:
         return [
             {
                 "role": "system",
-                "content": "Answer the question. End with exactly one line: FINAL ANSWER: <answer>",
+                "content": f"{answer_instruction} End with exactly one line: FINAL ANSWER: <answer>",
             },
             {
                 "role": "user",
@@ -108,8 +110,8 @@ def build_answer_messages(
             "role": "system",
             "content": (
                 "You answer questions using only the retrieved memory context. "
-                "If the context is insufficient, answer unknown. End with "
-                "exactly one line: FINAL ANSWER: <answer>"
+                "If the context is insufficient, answer unknown. "
+                f"{answer_instruction} End with exactly one line: FINAL ANSWER: <answer>"
             ),
         },
         {
@@ -117,6 +119,21 @@ def build_answer_messages(
             "content": f"Retrieved memory:\n{context}\n\nQuestion: {question}",
         },
     ]
+
+
+def _locomo_answer_instruction(category: int | None) -> str:
+    """Return LOCOMO-style answer guidance for the question category."""
+
+    if category == 2:
+        return (
+            "Use the date of the conversation when answering temporal questions. "
+            "Prefer the shortest answer that is directly supported by the context."
+        )
+    if category == 3:
+        return "Write a short phrase and use exact words from the context whenever possible."
+    if category == 5:
+        return "Choose the answer supported by the context, or answer unknown if neither option is supported."
+    return "Write a concise short answer, using exact words from the context whenever possible."
 
 
 def _messages_text(messages: list[dict[str, str]]) -> str:

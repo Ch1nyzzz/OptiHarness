@@ -1,0 +1,33 @@
+{
+  "mem0_source": {
+    "infer": true,
+    "batch_add": true,
+    "mem0_batch_size": 2,
+    "vector_store_provider": "qdrant",
+    "vector_store_config": {
+      "embedding_model_dims": 384
+    },
+    "llm_provider": "openai",
+    "llm_config": {
+      "model": "/data/home/yuhan/model_zoo/Qwen3-8B",
+      "api_key": "EMPTY",
+      "openai_base_url": "http://127.0.0.1:8000/v1",
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "embedder_provider": "fastembed",
+    "embedder_config": {
+      "model": "sentence-transformers/all-MiniLM-L6-v2"
+    }
+  },
+  "membank_source": {
+    "exchange_size": 2,
+    "exchange_stride": 2,
+    "retention_half_life_days": 14,
+    "retention_weight": 0.12,
+    "max_group_source_docs": 12
+  }
+}

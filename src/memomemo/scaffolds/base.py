@@ -135,6 +135,7 @@ def answer_from_hits(
         messages = build_answer_messages(
             question=example.question,
             hits=hits,
+            category=example.category,
             max_context_chars=max_context_chars,
         )
         response = client.chat(messages, max_tokens=256, temperature=0.0)

@@ -15,12 +15,14 @@ evolution:
   split: train
   limit: 40
   scaffolds:
-    - bm25
-    - amem
-    - mem0
-  candidate_top_k:
-    - 4
-    - 8
-    - 12
+    - mem0_source
+    - memgpt_source
+    - membank_source
+  scaffold_top_k:
+    mem0_source: 30
+    memgpt_source: 12
+    membank_source: 10
+  scaffold_extra_json: configs/source_memory.example.json
+  baseline_dir: runs/baselines
   max_context_chars: 6000
   output_dir: runs/locomo_memory_scaffold_run

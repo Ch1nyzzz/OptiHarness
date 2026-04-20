@@ -3,12 +3,22 @@ rank_bm25:
   adapter: memomemo.scaffolds.bm25_scaffold.RankBM25Scaffold
   role: Lexical BM25 retrieval scaffold.
 
-a_mem:
-  url: https://github.com/WujiangXu/A-mem.git
-  adapter: memomemo.scaffolds.amem_scaffold.AtomicMemoryScaffold
-  role: Atomic memory scaffold with entity and temporal retrieval signals.
-
 mem0:
   url: https://github.com/mem0ai/mem0.git
-  adapter: memomemo.scaffolds.mem0_scaffold.Mem0StyleScaffold
-  role: Fact memory scaffold with speaker/entity-aware retrieval.
+  adapter: memomemo.scaffolds.mem0_scaffold.Mem0SourceScaffold
+  source_path: references/vendor/mem0
+  role: Source-backed mem0 scaffold using Memory.add/search.
+
+memgpt:
+  url: https://github.com/cpacker/MemGPT.git
+  adapter: memomemo.scaffolds.memgpt_scaffold.MemGPTSourceScaffold
+  source_path: references/vendor/MemGPT
+  paper: https://arxiv.org/abs/2310.08560
+  role: Source-informed MemGPT/Letta hierarchical memory scaffold with core, recall, archival, and compaction tiers.
+
+membank:
+  url: https://github.com/zhongwanjun/MemoryBank-SiliconFriend.git
+  adapter: memomemo.scaffolds.membank_scaffold.MemoryBankSourceScaffold
+  source_path: references/vendor/MemoryBank-SiliconFriend
+  paper: https://arxiv.org/abs/2305.10250
+  role: Source-informed MemoryBank scaffold with daily memory docs, summaries, personality memory, forgetting-curve retention, and date-grouped retrieval.

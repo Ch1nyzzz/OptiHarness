@@ -1,10 +1,10 @@
-"""MemoMemo memory-evolution harness."""
+"""MemoMemo memory evaluation harness."""
 
-from memomemo.evolution import EvolutionRunner, run_initial_frontier
+from memomemo.evaluation import EvaluationRunner, run_initial_frontier
 from memomemo.pareto import ParetoPoint, pareto_frontier
 
 __all__ = [
-    "EvolutionRunner",
+    "EvaluationRunner",
     "ParetoPoint",
     "pareto_frontier",
     "run_initial_frontier",

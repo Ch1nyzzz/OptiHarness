@@ -1,27 +1,52 @@
-"""Initial memory-scaffold evolution runner."""
+"""Memory scaffold evaluation runner."""
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from memomemo.locomo import default_data_path, load_locomo_examples, prepare_locomo, select_split
 from memomemo.metrics import passed, score_prediction
 from memomemo.model import DEFAULT_BASE_URL, DEFAULT_MODEL, LocalModelClient
 from memomemo.pareto import ParetoPoint, save_frontier
 from memomemo.schemas import CandidateResult, LocomoExample, TaskResult
-from memomemo.scaffolds import DEFAULT_MEMORY_SCAFFOLDS, DEFAULT_SCAFFOLD_TOP_KS, build_scaffold
-from memomemo.scaffolds.base import MemoryScaffold, ScaffoldConfig
+from memomemo.scaffolds import (
+    DEFAULT_EVOLUTION_SEED_SCAFFOLDS,
+    DEFAULT_SCAFFOLD_TOP_KS,
+    build_scaffold,
+)
+from memomemo.scaffolds.base import (
+    MemoryScaffold,
+    ScaffoldConfig,
+)
 
 
-DEFAULT_TOP_K_VARIANTS = (4, 8, 12)
+BUILD_CACHE_SOURCE_FAMILIES = frozenset({"mem0"})
+BUILD_CACHE_SCAFFOLDS = frozenset({"mem0_source"})
 
 
-class EvolutionRunner:
+@dataclass
+class _CachedState:
+    state: Any
+    lock: threading.Lock
+
+
+@dataclass
+class _BuildCache:
+    build_key: str
+    states: dict[str, _CachedState]
+    built_samples: list[str]
+    reused_samples: list[str]
+
+
+class EvaluationRunner:
     """Evaluate memory scaffold candidates and write a Pareto frontier."""
 
     def __init__(
@@ -44,6 +69,7 @@ class EvolutionRunner:
         self.max_context_chars = max_context_chars
         self.max_eval_workers = max(1, int(max_eval_workers))
         self.force = force
+        self._build_state_cache: dict[str, dict[str, _CachedState]] = {}
         self.client = LocalModelClient(
             model=model,
             base_url=base_url,
@@ -89,13 +115,27 @@ class EvolutionRunner:
             if existing is not None:
                 return existing
 
+        build_cache = self._build_sample_cache(scaffold, scaffold_name, config)
         if self.max_eval_workers == 1 or len(self.examples) <= 1:
-            task_results = [self._evaluate_example(scaffold, config, example) for example in self.examples]
+            task_results = [
+                self._evaluate_example(
+                    scaffold,
+                    config,
+                    example,
+                    build_cache=build_cache.states if build_cache is not None else None,
+                )
+                for example in self.examples
+            ]
         else:
             with ThreadPoolExecutor(max_workers=self.max_eval_workers) as pool:
                 task_results = list(
                     pool.map(
-                        lambda example: self._evaluate_example(scaffold, config, example),
+                        lambda example: self._evaluate_example(
+                            scaffold,
+                            config,
+                            example,
+                            build_cache=build_cache.states if build_cache is not None else None,
+                        ),
                         self.examples,
                     )
                 )
@@ -122,23 +162,92 @@ class EvolutionRunner:
         payload = {
             "candidate": candidate.to_dict(),
             "tasks": [item.to_dict() for item in task_results],
+            "build_cache": {
+                "enabled": build_cache is not None,
+                "build_key": build_cache.build_key if build_cache is not None else None,
+                "sample_count": len(build_cache.states) if build_cache is not None else 0,
+                "samples": sorted(build_cache.states) if build_cache is not None else [],
+                "built_samples": build_cache.built_samples if build_cache is not None else [],
+                "reused_samples": build_cache.reused_samples if build_cache is not None else [],
+            },
         }
         result_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return candidate
+
+    def _build_sample_cache(
+        self,
+        scaffold: MemoryScaffold,
+        scaffold_name: str,
+        config: ScaffoldConfig,
+    ) -> _BuildCache | None:
+        build_key = _build_cache_key(scaffold, scaffold_name, config)
+        if build_key is None:
+            return None
+
+        examples_by_sample: dict[str, LocomoExample] = {}
+        for example in self.examples:
+            examples_by_sample.setdefault(example.sample_id, example)
+        if len(examples_by_sample) >= len(self.examples):
+            return None
+
+        states = self._build_state_cache.setdefault(build_key, {})
+        missing_items = [
+            item for item in examples_by_sample.items() if item[0] not in states
+        ]
+        reused_samples = sorted(set(examples_by_sample) - {sample_id for sample_id, _ in missing_items})
+
+        def build_one(item: tuple[str, LocomoExample]) -> tuple[str, _CachedState]:
+            sample_id, example = item
+            return sample_id, _CachedState(
+                state=scaffold.build(example, config),
+                lock=threading.Lock(),
+            )
+
+        if self.max_eval_workers == 1 or len(missing_items) <= 1:
+            built = dict(build_one(item) for item in missing_items)
+        else:
+            workers = min(self.max_eval_workers, len(missing_items))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                built = dict(pool.map(build_one, missing_items))
+        states.update(built)
+        candidate_states = {
+            sample_id: states[sample_id]
+            for sample_id in examples_by_sample
+        }
+        return _BuildCache(
+            build_key=build_key,
+            states=candidate_states,
+            built_samples=sorted(built),
+            reused_samples=reused_samples,
+        )
 
     def _evaluate_example(
         self,
         scaffold: MemoryScaffold,
         config: ScaffoldConfig,
         example: LocomoExample,
+        *,
+        build_cache: dict[str, _CachedState] | None = None,
     ) -> TaskResult:
-        run = scaffold.run(
-            example,
-            self.client,
-            config,
-            max_context_chars=self.max_context_chars,
-            dry_run=self.dry_run,
-        )
+        cached = (build_cache or {}).get(example.sample_id)
+        if cached is None:
+            run = scaffold.run(
+                example,
+                self.client,
+                config,
+                max_context_chars=self.max_context_chars,
+                dry_run=self.dry_run,
+            )
+        else:
+            with cached.lock:
+                run = scaffold.answer(
+                    cached.state,
+                    example,
+                    self.client,
+                    config,
+                    max_context_chars=self.max_context_chars,
+                    dry_run=self.dry_run,
+                )
         score = score_prediction(run.prediction, example.answer)
         return TaskResult(
             task_id=example.task_id,
@@ -157,10 +266,12 @@ def make_initial_candidate_grid(
     *,
     scaffolds: Iterable[str] | None = None,
     top_k_variants: Iterable[int] | None = None,
+    scaffold_extra: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[tuple[str, ScaffoldConfig, str]]:
-    """Build the initial scaffold/config grid for evolution."""
+    """Build the initial scaffold/config grid for evaluation."""
 
-    selected = list(scaffolds or DEFAULT_MEMORY_SCAFFOLDS)
+    selected = list(scaffolds or DEFAULT_EVOLUTION_SEED_SCAFFOLDS)
+    extras = scaffold_extra or {}
     out: list[tuple[str, ScaffoldConfig, str]] = []
     for scaffold_name in selected:
         top_k_values = (
@@ -169,9 +280,97 @@ def make_initial_candidate_grid(
             else [int(item) for item in top_k_variants]
         )
         for top_k in top_k_values:
-            config = ScaffoldConfig(top_k=int(top_k), window=1)
+            config = ScaffoldConfig(
+                top_k=int(top_k),
+                window=1,
+                extra=dict(extras.get(scaffold_name, {})),
+            )
             out.append((scaffold_name, config, f"{scaffold_name}_top{top_k}"))
     return out
+
+
+def _build_cache_key(
+    scaffold: MemoryScaffold,
+    scaffold_name: str,
+    config: ScaffoldConfig,
+) -> str | None:
+    source_family = _source_family_for_build_cache(scaffold_name, config)
+    if source_family is None:
+        return None
+
+    payload = {
+        "source_family": source_family,
+        "build_tag": _build_tag(scaffold, scaffold_name, config),
+        "build_config": _build_relevant_config(config.extra),
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
+    return f"{source_family}:{digest}"
+
+
+def _source_family_for_build_cache(scaffold_name: str, config: ScaffoldConfig) -> str | None:
+    source_family = str(config.extra.get("source_family") or "").lower()
+    if source_family in BUILD_CACHE_SOURCE_FAMILIES:
+        return source_family
+    if scaffold_name == "mem0_source":
+        return "mem0"
+    return None
+
+
+def _build_tag(scaffold: MemoryScaffold, scaffold_name: str, config: ScaffoldConfig) -> str:
+    explicit = str(
+        config.extra.get("build_tag")
+        or config.extra.get("build_cache_tag")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit
+
+    if scaffold_name in BUILD_CACHE_SCAFFOLDS:
+        return f"builtin:{scaffold_name}:{_source_file_digest(scaffold)}"
+
+    module_name = str(config.extra.get("module") or scaffold.__class__.__module__)
+    class_name = str(config.extra.get("class") or scaffold.__class__.__qualname__)
+    module_path = str(config.extra.get("module_path") or "")
+    return f"candidate:{scaffold_name}:{module_name}:{class_name}:{module_path}:{_source_file_digest(scaffold)}"
+
+
+def _source_file_digest(scaffold: MemoryScaffold) -> str:
+    try:
+        source_path = inspect.getsourcefile(scaffold.__class__)
+    except TypeError:
+        source_path = None
+    if not source_path:
+        return "unknown-source"
+    path = Path(source_path)
+    if not path.exists():
+        return str(path)
+    data = path.read_bytes()
+    return hashlib.sha256(data).hexdigest()[:20]
+
+
+def _build_relevant_config(extra: Mapping[str, object]) -> dict[str, object]:
+    ignored = {
+        "bandit_arm",
+        "build_cache_tag",
+        "build_tag",
+        "changes",
+        "class",
+        "cost_level",
+        "factory",
+        "hypothesis",
+        "module",
+        "module_path",
+        "parent_candidate_id",
+        "rerank",
+        "source_family",
+        "threshold",
+    }
+    return {
+        str(key): value
+        for key, value in extra.items()
+        if str(key) not in ignored
+    }
 
 
 def run_initial_frontier(
@@ -181,6 +380,7 @@ def run_initial_frontier(
     out_dir: Path,
     scaffolds: Iterable[str] | None = None,
     top_k_variants: Iterable[int] | None = None,
+    scaffold_extra: Mapping[str, Mapping[str, object]] | None = None,
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     api_key: str = "EMPTY",
@@ -190,6 +390,7 @@ def run_initial_frontier(
     candidate_id_prefix: str = "",
     max_eval_workers: int = 1,
     force: bool = False,
+    pareto_quality_threshold: float = 0.125,
 ) -> dict[str, object]:
     """Evaluate initial scaffolds and write summary + Pareto frontier."""
 
@@ -201,7 +402,7 @@ def run_initial_frontier(
         examples = examples[:limit]
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    runner = EvolutionRunner(
+    runner = EvaluationRunner(
         examples=examples,
         out_dir=out_dir,
         model=model,
@@ -214,11 +415,12 @@ def run_initial_frontier(
         force=force,
     )
 
-    selected_scaffolds = list(scaffolds or DEFAULT_MEMORY_SCAFFOLDS)
+    selected_scaffolds = list(scaffolds or DEFAULT_EVOLUTION_SEED_SCAFFOLDS)
     selected_top_k = None if top_k_variants is None else [int(item) for item in top_k_variants]
     grid = make_initial_candidate_grid(
         scaffolds=selected_scaffolds,
         top_k_variants=selected_top_k,
+        scaffold_extra=scaffold_extra,
     )
     started = time.time()
     summary_candidates: list[CandidateResult] = []
@@ -252,6 +454,7 @@ def run_initial_frontier(
             )
             for item in summary_candidates
         ],
+        quality_gap_threshold=pareto_quality_threshold,
     )
     summary = {
         "split": split,
@@ -263,6 +466,7 @@ def run_initial_frontier(
         "max_context_chars": max_context_chars,
         "max_eval_workers": max_eval_workers,
         "force": force,
+        "pareto_quality_threshold": pareto_quality_threshold,
         "scaffolds": selected_scaffolds,
         "top_k_variants": selected_top_k,
         "scaffold_top_k": {
@@ -279,19 +483,6 @@ def run_initial_frontier(
         encoding="utf-8",
     )
     return summary
-
-
-def _load_all_candidate_results(candidate_dir: Path) -> list[CandidateResult]:
-    candidates: list[CandidateResult] = []
-    if not candidate_dir.exists():
-        return candidates
-    for path in sorted(candidate_dir.glob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            candidates.append(CandidateResult.from_dict(payload["candidate"]))
-        except Exception:
-            continue
-    return candidates
 
 
 def _load_candidate_result(

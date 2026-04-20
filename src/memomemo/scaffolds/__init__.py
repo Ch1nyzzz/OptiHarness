@@ -2,30 +2,40 @@
 
 from __future__ import annotations
 
-from memomemo.scaffolds.amem_scaffold import AtomicMemoryScaffold
 from memomemo.scaffolds.base import MemoryScaffold, RetrievalMemoryScaffold, ScaffoldConfig, ScaffoldRun
 from memomemo.scaffolds.bm25_scaffold import RankBM25Scaffold
-from memomemo.scaffolds.mem0_scaffold import Mem0StyleScaffold
+from memomemo.scaffolds.mem0_scaffold import Mem0SourceScaffold
+from memomemo.scaffolds.membank_scaffold import MemoryBankSourceScaffold
+from memomemo.scaffolds.memgpt_scaffold import MemGPTSourceScaffold
 from memomemo.scaffolds.no_memory_scaffold import NoMemoryScaffold
 
 
 SCAFFOLD_REGISTRY: dict[str, type[MemoryScaffold]] = {
     RankBM25Scaffold.name: RankBM25Scaffold,
-    AtomicMemoryScaffold.name: AtomicMemoryScaffold,
-    Mem0StyleScaffold.name: Mem0StyleScaffold,
+    Mem0SourceScaffold.name: Mem0SourceScaffold,
+    MemGPTSourceScaffold.name: MemGPTSourceScaffold,
+    MemoryBankSourceScaffold.name: MemoryBankSourceScaffold,
     NoMemoryScaffold.name: NoMemoryScaffold,
 }
 
-DEFAULT_MEMORY_SCAFFOLDS = (
-    RankBM25Scaffold.name,
-    AtomicMemoryScaffold.name,
-    Mem0StyleScaffold.name,
+DEFAULT_EVOLUTION_SEED_SCAFFOLDS = (
+    Mem0SourceScaffold.name,
+    MemGPTSourceScaffold.name,
+    MemoryBankSourceScaffold.name,
 )
+
+DEFAULT_BASELINE_SCAFFOLDS = (
+    RankBM25Scaffold.name,
+    *DEFAULT_EVOLUTION_SEED_SCAFFOLDS,
+)
+
+DEFAULT_MEMORY_SCAFFOLDS = DEFAULT_EVOLUTION_SEED_SCAFFOLDS
 
 DEFAULT_SCAFFOLD_TOP_KS = {
     RankBM25Scaffold.name: 8,
-    AtomicMemoryScaffold.name: 12,
-    Mem0StyleScaffold.name: 8,
+    Mem0SourceScaffold.name: 30,
+    MemGPTSourceScaffold.name: 12,
+    MemoryBankSourceScaffold.name: 10,
     NoMemoryScaffold.name: 0,
 }
 
@@ -47,6 +57,8 @@ __all__ = [
     "RetrievalMemoryScaffold",
     "ScaffoldConfig",
     "ScaffoldRun",
+    "DEFAULT_BASELINE_SCAFFOLDS",
+    "DEFAULT_EVOLUTION_SEED_SCAFFOLDS",
     "DEFAULT_MEMORY_SCAFFOLDS",
     "DEFAULT_SCAFFOLD_TOP_KS",
     "available_scaffolds",
