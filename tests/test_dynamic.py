@@ -82,3 +82,52 @@ def test_load_builtin_scaffold_from_source_project_snapshot(tmp_path):
 
     assert not isinstance(scaffold, MemoryScaffold)
     assert scaffold.name == "snapshot_memgpt"
+
+
+def test_load_generated_wrapper_from_source_project_snapshot(tmp_path):
+    generated_dir = tmp_path / "generated"
+    generated_dir.mkdir()
+    generated_dir.joinpath("snapshot_wrapper.py").write_text(
+        "\n".join(
+            [
+                "from memomemo.scaffolds.memgpt_scaffold import SnapshotOnlyScaffold",
+                "",
+                "__all__ = ['SnapshotOnlyScaffold']",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    source_root = tmp_path / "snapshot" / "candidate" / "project_source" / "src"
+    scaffold_dir = source_root / "memomemo" / "scaffolds"
+    scaffold_dir.mkdir(parents=True)
+    (source_root / "memomemo" / "__init__.py").write_text("", encoding="utf-8")
+    (scaffold_dir / "__init__.py").write_text("", encoding="utf-8")
+    (scaffold_dir / "memgpt_scaffold.py").write_text(
+        "\n".join(
+            [
+                "class SnapshotOnlyScaffold:",
+                '    name = "snapshot_only"',
+                "    def build(self, example, config):",
+                "        return None",
+                "    def answer(self, state, example, client, config, *, max_context_chars, dry_run):",
+                "        return None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    scaffold = load_candidate_scaffold(
+        {
+            "module": "snapshot_wrapper",
+            "class": "SnapshotOnlyScaffold",
+            "candidate_root": str(generated_dir),
+            "extra": {
+                "source_project_path": str(tmp_path / "snapshot" / "candidate" / "project_source"),
+            },
+        },
+        project_root=Path.cwd(),
+    )
+
+    assert not isinstance(scaffold, MemoryScaffold)
+    assert scaffold.name == "snapshot_only"

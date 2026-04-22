@@ -8,12 +8,12 @@ locomo:
   data_path: data/locomo/locomo10.json
   split_path: data/locomo/splits.json
   warmup_size: 40
-  train_size: 40
+  train_size: 80
   seed: 13
 
 evolution:
   split: train
-  limit: 40
+  limit: 0
   scaffolds:
     - mem0_source
     - memgpt_source

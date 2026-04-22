@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import sys
 from contextlib import contextmanager
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -39,9 +40,9 @@ def load_candidate_scaffold(candidate: dict[str, Any], *, project_root: Path) ->
         if root_path not in sys.path:
             sys.path.insert(0, root_path)
 
+    source_project_path = _source_project_path(candidate, project_root=project_root)
     scaffold_name = candidate.get("scaffold_name") or candidate.get("seed_name")
     if scaffold_name:
-        source_project_path = _source_project_path(candidate, project_root=project_root)
         if source_project_path is not None:
             return _load_source_project_scaffold(
                 str(scaffold_name),
@@ -57,29 +58,35 @@ def load_candidate_scaffold(candidate: dict[str, Any], *, project_root: Path) ->
         raise ValueError("candidate must provide `module`, `module_path`, or `scaffold_name`")
 
     importlib.invalidate_caches()
-    if module_path:
-        module = _load_module_path(module_path, project_root=project_root)
-    else:
-        if candidate_root is not None and module_name.startswith("memomemo.generated."):
-            module_name = module_name.removeprefix("memomemo.generated.")
-        if candidate_root is not None and module_name in sys.modules:
-            del sys.modules[module_name]
-        module = importlib.import_module(module_name)
-        module = importlib.reload(module)
+    context = (
+        _isolated_memomemo_project(source_project_path)
+        if source_project_path is not None
+        else nullcontext()
+    )
+    with context:
+        if module_path:
+            module = _load_module_path(module_path, project_root=project_root)
+        else:
+            if candidate_root is not None and module_name.startswith("memomemo.generated."):
+                module_name = module_name.removeprefix("memomemo.generated.")
+            if candidate_root is not None and module_name in sys.modules:
+                del sys.modules[module_name]
+            module = importlib.import_module(module_name)
+            module = importlib.reload(module)
 
-    if class_name:
-        cls = getattr(module, class_name)
-        scaffold = cls()
-    elif factory_name:
-        scaffold = getattr(module, factory_name)()
-    elif hasattr(module, "build_scaffold"):
-        scaffold = module.build_scaffold()
-    elif hasattr(module, "SCAFFOLD_CLASS"):
-        scaffold = module.SCAFFOLD_CLASS()
-    else:
-        raise ValueError(
-            f"{module_name} must expose class/factory/build_scaffold/SCAFFOLD_CLASS"
-        )
+        if class_name:
+            cls = getattr(module, class_name)
+            scaffold = cls()
+        elif factory_name:
+            scaffold = getattr(module, factory_name)()
+        elif hasattr(module, "build_scaffold"):
+            scaffold = module.build_scaffold()
+        elif hasattr(module, "SCAFFOLD_CLASS"):
+            scaffold = module.SCAFFOLD_CLASS()
+        else:
+            raise ValueError(
+                f"{module_name} must expose class/factory/build_scaffold/SCAFFOLD_CLASS"
+            )
 
     if not isinstance(scaffold, MemoryScaffold):
         required = ("build", "answer", "name")

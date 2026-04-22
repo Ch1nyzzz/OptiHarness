@@ -64,7 +64,6 @@ memomemo optimize \
   --run-id locomo_memory_source_opt \
   --iterations 20 \
   --split train \
-  --limit 40 \
   --scaffolds mem0_source,memgpt_source,membank_source \
   --scaffold-extra-json @configs/source_memory.example.json \
   --model /data/home/yuhan/model_zoo/Qwen3-8B \
@@ -103,7 +102,6 @@ Full local-model scoring:
 ```bash
 memomemo evolve \
   --split train \
-  --limit 40 \
   --scaffold-extra-json @configs/source_memory.example.json \
   --model /data/home/yuhan/model_zoo/Qwen3-8B \
   --base-url http://127.0.0.1:8000/v1 \
@@ -113,7 +111,7 @@ memomemo evolve \
 Key outputs:
 
 - `runs/<run>/candidate_results/*.json`
-- `runs/<run>/pareto_frontier.json`
+- `runs/<run>/best_candidates.json`
 - `runs/<run>/run_summary.json`
 
 ## Run Reusable Baselines
@@ -151,14 +149,12 @@ This is the real optimization loop. It follows the `skillevolve` /
 2. call `claude -p` to propose new candidate memory-scaffold code,
 3. require Claude to write `pending_eval.json`,
 4. import and evaluate those candidates,
-5. update `pareto_frontier.json` over `passrate` and `token_consuming`.
+5. update `best_candidates.json` by highest `passrate`.
 
-The proposer prompt is aligned with the stricter `meta-harness` discipline,
-adapted to MemoMemo's two-objective Pareto frontier: each iteration must
-produce exactly one candidate in the default flow, write missing post-eval
-reports, prototype the mechanism before final implementation, avoid
-parameter-only tuning, and self-critique the candidate before writing
-`pending_eval.json`.
+The proposer prompt is aligned with the stricter `meta-harness` discipline:
+each iteration must produce exactly one candidate, start from a clean scoped
+source snapshot, use historical iterations as diagnostic references only, avoid
+parameter-only tuning, and write `pending_eval.json`.
 
 Optimization seeds exactly one default top-k candidate per source scaffold:
 `mem0_source=top30`, `memgpt_source=top12`, and `membank_source=top10`.
@@ -184,7 +180,6 @@ memomemo optimize \
   --run-id locomo_memory_opt \
   --iterations 20 \
   --split train \
-  --limit 40 \
   --baseline-dir runs/baselines \
   --scaffold-extra-json @configs/source_memory.example.json \
   --model /data/home/yuhan/model_zoo/Qwen3-8B \
@@ -199,18 +194,24 @@ scaffolds. It loads the default top-k candidate for each selected scaffold.
 Claude writes generated candidates and source snapshots under the run output:
 
 - `runs/<run-id>/generated/`
-- `runs/<run-id>/generated/source_snapshots/`
 
 The harness writes proposer/eval artifacts under:
 
-- `runs/<run-id>/claude_sessions/`
-- `runs/<run-id>/proposer_calls/` when `--selection-policy ucb` is used
+- `runs/<run-id>/proposer_calls/iter_<NNN>/`
+- `runs/<run-id>/proposer_calls/iter_<NNN>/workspace/`
+- `runs/<run-id>/proposer_calls/iter_<NNN>/source_snapshot/`
+- `runs/<run-id>/proposer_calls/iter_<NNN>/eval/`
 - `runs/<run-id>/pending_eval.json`
 - `runs/<run-id>/reports/`
 - `runs/<run-id>/candidate_results/`
 - `runs/<run-id>/trace_slices/`
 - `runs/<run-id>/evolution_summary.jsonl`
-- `runs/<run-id>/pareto_frontier.json`
+- `runs/<run-id>/best_candidates.json`
+- `runs/<run-id>/candidate_score_table.json`
+- `runs/<run-id>/retrieval_diagnostics_summary.json`
+- `runs/<run-id>/iteration_index.json`
+- `runs/<run-id>/diff_summary.jsonl`
+- `runs/<run-id>/progressive_state.json` when adaptive progressive loading is used
 
 Each Claude proposer session also writes `meta.json`, `tool_access.json`, and
 `metrics.json`. These include input/output/cache tokens, estimated USD cost,
@@ -219,8 +220,20 @@ counts. The optimizer appends the same proposer metrics to
 `evolution_summary.jsonl` as `proposer_result` events and aggregates them in
 `optimizer_summary.json`.
 
-In UCB mode, low-budget contexts copy at most 3 full trace cases per candidate
-per iteration, medium copies at most 10, and high may inspect all trace cases.
+Proposer runs use the Docker filesystem sandbox by default. Provide
+`--proposer-docker-image` for the image that contains the selected code-agent
+CLI and any auth/config mounts needed by that agent. Use
+`--proposer-sandbox none` only when intentionally running the proposer directly
+on the host.
+
+Default optimization uses the same scoped workspace builder with a fixed high
+context budget. `--selection-policy progressive` starts with low context for
+the first five proposer iterations, then escalates low -> medium -> high on
+passrate stagnation and resets to low after a passrate improvement. Every
+budget sees full cumulative summaries in `workspace/summaries/`; raw
+per-iteration artifacts are copied into `workspace/reference_iterations/`
+according to the current budget. Low and medium trace slices prioritize
+failures that no previous iteration has answered correctly.
 
 ## Fetch Reference Repos
 

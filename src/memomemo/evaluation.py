@@ -351,7 +351,6 @@ def _source_file_digest(scaffold: MemoryScaffold) -> str:
 
 def _build_relevant_config(extra: Mapping[str, object]) -> dict[str, object]:
     ignored = {
-        "bandit_arm",
         "build_cache_tag",
         "build_tag",
         "changes",
@@ -361,10 +360,12 @@ def _build_relevant_config(extra: Mapping[str, object]) -> dict[str, object]:
         "hypothesis",
         "module",
         "module_path",
-        "parent_candidate_id",
+        "optimization_cell",
+        "optimization_target",
         "rerank",
         "source_family",
         "threshold",
+        "touched_cells",
     }
     return {
         str(key): value

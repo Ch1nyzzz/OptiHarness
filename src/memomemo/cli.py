@@ -14,6 +14,7 @@ from memomemo.baseline import (
 from memomemo.evaluation import run_initial_frontier
 from memomemo.locomo import prepare_locomo
 from memomemo.model import DEFAULT_BASE_URL, DEFAULT_MODEL
+from memomemo.claude_runner import DEFAULT_CODEX_MODEL
 from memomemo.optimizer import MemoOptimizer, OptimizerConfig
 from memomemo.scaffolds import (
     DEFAULT_BASELINE_SCAFFOLDS,
@@ -127,13 +128,25 @@ def main() -> int:
     optimize.add_argument("--run-id", default="locomo_memory_opt")
     optimize.add_argument("--iterations", type=int, default=20)
     optimize.add_argument("--split", choices=("warmup", "train", "test"), default="train")
-    optimize.add_argument("--limit", type=int, default=40)
+    optimize.add_argument("--limit", type=int, default=0)
     optimize.add_argument("--out", type=Path, default=None)
     optimize.add_argument("--model", default=DEFAULT_MODEL)
     optimize.add_argument("--base-url", default=DEFAULT_BASE_URL)
     optimize.add_argument("--api-key", default="EMPTY")
     optimize.add_argument("--eval-timeout-s", type=int, default=300)
+    optimize.add_argument(
+        "--proposer-agent",
+        choices=("claude", "codex", "kimi"),
+        default="claude",
+        help="Code agent used to generate candidates.",
+    )
     optimize.add_argument("--claude-model", default="claude-sonnet-4-6")
+    optimize.add_argument("--codex-model", default=DEFAULT_CODEX_MODEL)
+    optimize.add_argument(
+        "--kimi-model",
+        default="",
+        help="Kimi model override. Omit to use the default model from Kimi config.",
+    )
     optimize.add_argument("--propose-timeout-s", type=int, default=2400)
     optimize.add_argument("--dry-run", action="store_true")
     optimize.add_argument("--max-context-chars", type=int, default=6000)
@@ -150,13 +163,57 @@ def main() -> int:
     )
     optimize.add_argument(
         "--selection-policy",
-        choices=("default", "ucb"),
+        choices=("default", "progressive"),
         default="default",
-        help="Use the default proposer loop or UCB-guided parent/context selection.",
+        help=(
+            "Use fixed-high scoped context (default) or adaptive progressive "
+            "context loading."
+        ),
     )
-    optimize.add_argument("--ucb-exploration-c", type=float, default=0.6)
-    optimize.add_argument("--ucb-alpha", type=float, default=0.25)
-    optimize.add_argument("--ucb-gamma", type=float, default=0.95)
+    optimize.add_argument(
+        "--proposer-sandbox",
+        choices=("none", "docker"),
+        default="docker",
+        help="Run proposer code agents directly or inside a Docker filesystem sandbox.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-image",
+        default="",
+        help="Docker image used when --proposer-sandbox=docker.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-workspace",
+        default="/workspace",
+        help="Container path for the mounted proposer workspace.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-env",
+        action="append",
+        default=[],
+        help="Extra environment variable name to pass into the proposer container.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-mount",
+        action="append",
+        default=[],
+        help="Extra Docker volume mount spec, for example ~/.codex:/root/.codex:ro.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-kimi-cli-kind",
+        choices=("claude", "legacy"),
+        default="claude",
+        help="Kimi CLI style available inside the proposer Docker image.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-user",
+        default="",
+        help="Optional Docker user spec for proposer containers, for example 1000:1000.",
+    )
+    optimize.add_argument(
+        "--proposer-docker-home",
+        default="",
+        help="Optional HOME value inside the proposer container.",
+    )
     optimize.add_argument(
         "--pareto-quality-threshold",
         type=float,
@@ -253,7 +310,10 @@ def main() -> int:
                 base_url=args.base_url,
                 api_key=args.api_key,
                 eval_timeout_s=args.eval_timeout_s,
+                proposer_agent=args.proposer_agent,
                 claude_model=args.claude_model,
+                codex_model=args.codex_model,
+                kimi_model=args.kimi_model,
                 propose_timeout_s=args.propose_timeout_s,
                 dry_run=args.dry_run,
                 max_context_chars=args.max_context_chars,
@@ -263,10 +323,15 @@ def main() -> int:
                 scaffolds=tuple(selected_scaffolds),
                 scaffold_extra=scaffold_extra,
                 selection_policy=args.selection_policy,
-                ucb_exploration_c=args.ucb_exploration_c,
-                ucb_alpha=args.ucb_alpha,
-                ucb_gamma=args.ucb_gamma,
                 pareto_quality_threshold=args.pareto_quality_threshold,
+                proposer_sandbox=args.proposer_sandbox,
+                proposer_docker_image=args.proposer_docker_image,
+                proposer_docker_workspace=args.proposer_docker_workspace,
+                proposer_docker_env=tuple(_csv_many(args.proposer_docker_env)),
+                proposer_docker_mount=tuple(args.proposer_docker_mount or ()),
+                proposer_docker_kimi_cli_kind=args.proposer_docker_kimi_cli_kind,
+                proposer_docker_user=args.proposer_docker_user,
+                proposer_docker_home=args.proposer_docker_home,
             )
         )
         payload = optimizer.run()
@@ -278,6 +343,13 @@ def main() -> int:
 
 def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _csv_many(values: list[str] | tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        out.extend(_csv(value))
+    return out
 
 
 def _scaffold_extra(value: str | None) -> dict[str, dict[str, object]]:

@@ -52,7 +52,7 @@ def test_pareto_quality_threshold_keeps_near_quality_token_tradeoff():
     ]
 
 
-def test_optimizer_default_pareto_quality_threshold_is_limit40_friendly(tmp_path):
+def test_optimizer_default_pareto_quality_threshold_is_full_train_friendly(tmp_path):
     config = OptimizerConfig(run_id="r", out_dir=tmp_path)
 
     assert config.pareto_quality_threshold == 0.125

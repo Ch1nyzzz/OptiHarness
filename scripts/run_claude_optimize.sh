@@ -11,7 +11,6 @@ args=(
   --run-id "${MEMOMEMO_RUN_ID:-locomo_memory_opt}"
   --iterations "${MEMOMEMO_ITERATIONS:-20}"
   --split "${MEMOMEMO_SPLIT:-train}"
-  --limit "${MEMOMEMO_LIMIT:-40}"
   --scaffold-extra-json "${MEMOMEMO_SCAFFOLD_EXTRA_JSON:-@configs/source_memory.example.json}"
   --model "${MEMOMEMO_MODEL:-/data/home/yuhan/model_zoo/Qwen3-8B}"
   --base-url "${MEMOMEMO_BASE_URL:-http://127.0.0.1:8000/v1}"

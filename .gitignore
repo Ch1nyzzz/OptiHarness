@@ -46,6 +46,8 @@ ENV/
 # Runtime outputs from experiments and model/proposer runs
 runs/*
 !runs/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # Downloaded reference repositories
 references/vendor/
