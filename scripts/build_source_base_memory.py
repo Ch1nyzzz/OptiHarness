@@ -234,7 +234,7 @@ def _build_mem0_sample(
 
 
 def _persistent_mem0_config(sample: Any, out_dir: Path, extra: dict[str, Any]) -> dict[str, Any]:
-    collection = str(extra.get("collection_name") or _safe_collection(f"memomemo_{sample.sample_id}"))
+    collection = str(extra.get("collection_name") or _safe_collection(f"optiharness_{sample.sample_id}"))
     vector_store_config = dict(extra.get("vector_store_config") or {})
     vector_store_config.update(
         {

@@ -28,7 +28,7 @@ def test_progressive_prompt_uses_workspace_summaries_and_reference_iterations():
     assert "summaries/candidate_score_table.json" in prompt
     assert "summaries/retrieval_diagnostics_summary.json" in prompt
     assert "summaries/diff_summary.jsonl" in prompt
-    assert "MemoMemo Proposer" in prompt
+    assert "OptiHarness Proposer" in prompt
     assert "Context budget" not in prompt
     assert "Context scope" not in prompt
     assert '"budget":' not in prompt
@@ -105,7 +105,7 @@ def test_default_prompt_uses_neutral_context_description():
         selection_policy="default",
     )
 
-    assert "MemoMemo Proposer" in prompt
+    assert "OptiHarness Proposer" in prompt
     assert "Context budget" not in prompt
     assert "Context scope" not in prompt
     assert '"budget":' not in prompt

@@ -1,14 +1,19 @@
 import json
 from types import SimpleNamespace
 
+from memomemo.benchmark_workspaces import (
+    LOCOMO_WORKSPACE_SPEC,
+    MINIMAL_BENCHMARK_PACKAGE_INIT,
+)
 from memomemo import optimizer as optimizer_module
-from memomemo.optimizer import MemoOptimizer, OptimizerConfig, _single_top_k
+from memomemo.locomo_optimizer import LocomoOptimizer, LocomoOptimizerConfig
+from memomemo.optimizer import _single_top_k
 from memomemo.schemas import CandidateResult
 import pytest
 
 
 def test_default_proposer_evaluates_only_one_candidate(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
     def fake_run_code_agent_prompt(*args, **kwargs):
         captured["prompt"] = args[0]
@@ -45,23 +50,108 @@ def test_default_proposer_evaluates_only_one_candidate(tmp_path, monkeypatch):
     assert captured["proposed"][0]["budget"] == "high"
     assert captured["proposed"][0]["reference_iterations"] == []
     assert captured["examples"] == []
-    assert "MemoMemo Proposer" in captured["prompt"]
+    assert "OptiHarness Proposer" in captured["prompt"]
     assert "Context budget" not in captured["prompt"]
     assert "Context scope" not in captured["prompt"]
     assert '"budget":' not in captured["prompt"]
     assert "Optimization Focus" not in captured["prompt"]
     assert "mechanism directions" not in captured["prompt"]
     snapshot = tmp_path / "proposer_calls" / "iter_001" / "source_snapshot" / "candidate"
-    assert (snapshot / "project_source" / "src" / "memomemo" / "optimizer.py").exists()
+    assert (snapshot / "project_source" / "src" / "memomemo" / "dynamic.py").exists()
+    assert (snapshot / "project_source" / "src" / "memomemo" / "scaffolds" / "base.py").exists()
+    assert not (snapshot / "project_source" / "src" / "memomemo" / "optimizer.py").exists()
     assert (snapshot / "upstream_source" / "MemGPT" / "letta" / "schemas" / "memory.py").exists()
     assert "candidate_count_adjusted" in optimizer.summary_path.read_text(
         encoding="utf-8"
     )
 
 
+def test_default_proposer_retries_when_pending_eval_missing(tmp_path, monkeypatch):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            proposer_sandbox="none",
+        )
+    )
+    prompts = []
+
+    def fake_run_code_agent_prompt(prompt, **kwargs):
+        prompts.append(prompt)
+        if len(prompts) == 2:
+            (kwargs["cwd"] / "pending_eval.json").write_text(
+                json.dumps({"candidates": [{"name": "first", "scaffold_name": "bm25"}]}),
+                encoding="utf-8",
+            )
+        return SimpleNamespace(
+            returncode=0,
+            timed_out=False,
+            stderr="",
+            metrics={},
+            usage=None,
+            tool_access={},
+        )
+
+    captured = {}
+
+    def fake_evaluate(iteration, proposed, examples):
+        captured["proposed"] = proposed
+        return []
+
+    monkeypatch.setattr(optimizer_module, "run_code_agent_prompt", fake_run_code_agent_prompt)
+    monkeypatch.setattr(optimizer, "_evaluate_proposed", fake_evaluate)
+
+    optimizer._run_default_proposer_iteration(1, examples=[])
+
+    assert len(prompts) == 2
+    assert "Required Repair" in prompts[1]
+    assert captured["proposed"][0]["name"] == "first"
+    summary = optimizer.summary_path.read_text(encoding="utf-8")
+    assert "proposer_missing_pending_retry" in summary
+
+
+def test_default_proposer_accepts_top_level_candidate_list(tmp_path, monkeypatch):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            proposer_sandbox="none",
+        )
+    )
+    captured = {}
+
+    def fake_run_code_agent_prompt(prompt, **kwargs):
+        (kwargs["cwd"] / "pending_eval.json").write_text(
+            json.dumps([{"name": "first", "scaffold_name": "bm25"}]),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            returncode=0,
+            timed_out=False,
+            stderr="",
+            metrics={},
+            usage=None,
+            tool_access={},
+        )
+
+    def fake_evaluate(iteration, proposed, examples):
+        captured["proposed"] = proposed
+        return []
+
+    monkeypatch.setattr(optimizer_module, "run_code_agent_prompt", fake_run_code_agent_prompt)
+    monkeypatch.setattr(optimizer, "_evaluate_proposed", fake_evaluate)
+
+    optimizer._run_default_proposer_iteration(1, examples=[])
+
+    assert captured["proposed"][0]["name"] == "first"
+    pending = json.loads(optimizer.pending_eval_path.read_text(encoding="utf-8"))
+    assert pending["candidates"][0]["name"] == "first"
+    assert pending["candidates"][0]["scaffold_name"] == "bm25"
+
+
 def test_optimizer_can_run_codex_proposer_agent(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(
-        OptimizerConfig(
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             proposer_agent="codex",
@@ -96,8 +186,8 @@ def test_optimizer_can_run_codex_proposer_agent(tmp_path, monkeypatch):
 
 
 def test_optimizer_can_disable_default_docker_sandbox(tmp_path):
-    optimizer = MemoOptimizer(
-        OptimizerConfig(
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             proposer_sandbox="none",
@@ -108,8 +198,8 @@ def test_optimizer_can_disable_default_docker_sandbox(tmp_path):
 
 
 def test_optimizer_can_run_kimi_proposer_agent(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(
-        OptimizerConfig(
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             proposer_agent="kimi",
@@ -143,8 +233,8 @@ def test_optimizer_can_run_kimi_proposer_agent(tmp_path, monkeypatch):
 
 
 def test_optimizer_rejects_baseline_with_mismatched_count(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(
-        OptimizerConfig(
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             iterations=0,
@@ -179,8 +269,8 @@ def test_optimizer_rejects_baseline_with_mismatched_count(tmp_path, monkeypatch)
 
 
 def test_run_writes_initial_trace_slices(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(
-        OptimizerConfig(
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             iterations=0,
@@ -252,7 +342,7 @@ def test_candidate_code_policy_rejects_runtime_trace_and_scorer_access(tmp_path)
         ),
         encoding="utf-8",
     )
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
     violations = optimizer._candidate_code_policy_violations(
         {
@@ -275,7 +365,7 @@ def test_candidate_code_policy_rejects_raw_locomo_access_in_source_snapshot(tmp_
         "from pathlib import Path\nPath('data/locomo/locomo10.json').read_text()\n",
         encoding="utf-8",
     )
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
     violations = optimizer._candidate_code_policy_violations(
         {
@@ -297,7 +387,7 @@ def test_source_candidate_policy_allows_preexisting_scorer_import(tmp_path):
             "from memomemo.metrics import retrieval_oracle_prediction\n",
             encoding="utf-8",
         )
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
     violations = optimizer._candidate_code_policy_violations(
         {
@@ -323,7 +413,7 @@ def test_source_candidate_policy_rejects_new_scorer_import(tmp_path):
         "from memomemo.metrics import retrieval_oracle_prediction\n",
         encoding="utf-8",
     )
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
     violations = optimizer._candidate_code_policy_violations(
         {
@@ -341,22 +431,33 @@ def test_single_top_k_uses_first_value_from_list():
     assert _single_top_k(12) == (12, False)
 
 
-def test_optimizer_copies_full_source_context(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+def test_optimizer_copies_declared_locomo_source_scope(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     dest = tmp_path / "context"
 
     optimizer._copy_project_source_context(dest)
     optimizer._copy_upstream_source_context("fusion", dest)
 
-    assert (dest / "project_source" / "src" / "memomemo" / "optimizer.py").exists()
+    manifest = json.loads((dest / "project_source_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["benchmark"] == LOCOMO_WORKSPACE_SPEC.benchmark
+    assert sorted(manifest["source_files"]) == sorted(LOCOMO_WORKSPACE_SPEC.source_files)
+    assert (dest / "project_source" / "src" / "memomemo" / "dynamic.py").exists()
+    assert (
+        dest / "project_source" / "src" / "memomemo" / "__init__.py"
+    ).read_text(encoding="utf-8") == MINIMAL_BENCHMARK_PACKAGE_INIT
     assert (dest / "project_source" / "src" / "memomemo" / "scaffolds" / "mem0_scaffold.py").exists()
+    assert not (dest / "project_source" / "src" / "memomemo" / "optimizer.py").exists()
+    assert not (dest / "project_source" / "src" / "memomemo" / "baseline.py").exists()
+    assert not (dest / "project_source" / "src" / "memomemo" / "tau_banking.py").exists()
+    assert not (dest / "project_source" / "src" / "memomemo" / "tau_agents").exists()
+    assert not (dest / "project_source" / "src" / "memomemo" / "text_classification.py").exists()
     assert (dest / "upstream_source" / "mem0" / "mem0" / "memory" / "main.py").exists()
     assert (dest / "upstream_source" / "MemGPT" / "letta" / "schemas" / "memory.py").exists()
     assert (dest / "upstream_source" / "MemoryBank-SiliconFriend" / "memory_bank" / "summarize_memory.py").exists()
 
 
 def test_source_snapshot_uses_single_candidate_dir(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     call_dir = tmp_path / "call"
     call_dir.mkdir()
 
@@ -371,6 +472,9 @@ def test_source_snapshot_uses_single_candidate_dir(tmp_path):
     assert not (snapshot_root / "candidate_a").exists()
     assert not (snapshot_root / "candidate_b").exists()
     assert manifest["candidate_dir"] == str(snapshot_root / "candidate")
+    assert manifest["benchmark"] == LOCOMO_WORKSPACE_SPEC.benchmark
+    assert manifest["primary_source_file"] == LOCOMO_WORKSPACE_SPEC.primary_source_file
+    assert sorted(manifest["project_source_files"]) == sorted(LOCOMO_WORKSPACE_SPEC.source_files)
     assert "trace_scope" not in manifest
     assert "optimization_cell" not in manifest
     assert "cost_level" not in manifest
@@ -378,7 +482,7 @@ def test_source_snapshot_uses_single_candidate_dir(tmp_path):
 
 
 def test_reference_bundle_prunes_trace_slices_to_budget_access(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     src = tmp_path / "proposer_calls" / "iter_001"
     for level in ("low", "medium", "high"):
         trace_dir = src / "trace_slices" / level
@@ -405,7 +509,7 @@ def test_reference_bundle_prunes_trace_slices_to_budget_access(tmp_path):
 
 
 def test_append_summary_writes_only_global_summary(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     candidate = _candidate("memgpt_source_top8")
 
     optimizer._append_summary(iteration=0, candidate=candidate)
@@ -419,7 +523,7 @@ def test_append_summary_writes_only_global_summary(tmp_path):
 def test_progressive_workspace_outputs_sync_and_normalize_candidate_paths(
     tmp_path, monkeypatch
 ):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     call_dir = tmp_path / "proposer_calls" / "iter_004"
     workspace = call_dir / "workspace"
     captured = {}
@@ -502,8 +606,8 @@ def test_progressive_workspace_outputs_sync_and_normalize_candidate_paths(
 
 
 def test_progressive_docker_sandbox_maps_container_workspace_paths(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(
-        OptimizerConfig(
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             selection_policy="progressive",
@@ -588,7 +692,7 @@ def test_progressive_docker_sandbox_maps_container_workspace_paths(tmp_path, mon
 
 
 def test_progressive_access_violation_retries_with_boundary_feedback(tmp_path, monkeypatch):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     workspace = tmp_path / "proposer_calls" / "iter_004" / "workspace"
     prompts = []
     build_calls = []
@@ -676,7 +780,7 @@ def test_progressive_access_violation_retries_with_boundary_feedback(tmp_path, m
 
 
 def test_progressive_budget_schedule_transitions(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
     assert [optimizer._progressive_budget_for_iteration(item) for item in range(1, 6)] == [
         "low",
@@ -719,7 +823,7 @@ def test_progressive_budget_schedule_transitions(tmp_path):
 
 
 def test_progressive_reference_selection_uses_best_and_worst_iterations(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     for iteration in (1, 2, 3, 4):
         call_dir = tmp_path / "proposer_calls" / f"iter_{iteration:03d}"
         call_dir.mkdir(parents=True)
@@ -750,7 +854,7 @@ def test_progressive_reference_selection_uses_best_and_worst_iterations(tmp_path
 
 
 def test_progressive_workspace_copies_full_summaries_and_selected_raw_refs(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     optimizer.summary_path.write_text(
         "\n".join(
             json.dumps({"iteration": item, "candidate": {"candidate_id": f"iter{item:03d}_x"}})
@@ -811,14 +915,14 @@ def test_progressive_workspace_copies_full_summaries_and_selected_raw_refs(tmp_p
         / "original_project_source"
         / "src"
         / "memomemo"
-        / "optimizer.py"
+        / "dynamic.py"
     ).exists()
     assert (workspace / "workspace_manifest.json").exists()
     assert (workspace / "access_policy.json").exists()
 
 
 def test_optimizer_records_and_aggregates_proposer_metrics(tmp_path):
-    optimizer = MemoOptimizer(OptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     result = SimpleNamespace(
         returncode=0,
         timed_out=False,

@@ -427,7 +427,7 @@ def test_run_codex_prompt_uses_absolute_cd_and_records_usage(tmp_path, monkeypat
 
     assert result.command[:4] == ("codex", "exec", "--model", DEFAULT_CODEX_MODEL)
     assert result.command[result.command.index("--cd") + 1] == str(repo_dir.resolve())
-    assert result.command[-2:] == ("--json", "-")
+    assert result.command[-3:] == ("--ephemeral", "--json", "-")
     assert calls == [
         (
             result.command,
@@ -496,6 +496,7 @@ def test_run_codex_prompt_can_run_inside_docker_sandbox(tmp_path, monkeypatch):
     assert "HOME=/tmp/proposer-home" in result.command
     assert "memo-proposer:test" in result.command
     assert result.command[result.command.index("--cd") + 1] == "/workspace"
+    assert result.command[-3:] == ("--ephemeral", "--json", "-")
     assert calls[0][1]["cwd"] == str(repo_dir.resolve())
     assert result.tool_access["files_read"] == {"src/a.py": {"reads": 1, "lines": 0}}
 

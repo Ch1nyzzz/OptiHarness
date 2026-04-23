@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "memomemo"
+name = "optiharness"
 version = "0.1.0"
-description = "Clean memory-focused evolution harness for LOCOMO with BM25, Mem0, MemGPT, and MemoryBank-style scaffolds."
+description = "Optimization harness for benchmark-specific agent evolution."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,8 +31,12 @@ source = [
 dev = [
   "pytest>=8.0",
 ]
+benchmark = [
+  "datasets>=2.19.0",
+]
 
 [project.scripts]
+optiharness = "optiharness.cli:main"
 memomemo = "memomemo.cli:main"
 
 [tool.setuptools]

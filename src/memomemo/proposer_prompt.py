@@ -22,6 +22,8 @@ def build_progressive_proposer_prompt(
     split: str,
     limit: int,
     selection_policy: str = "progressive",
+    benchmark_name: str = "LOCOMO conversational-memory QA",
+    raw_data_policy: str = "raw LOCOMO data",
 ) -> str:
     """Build the proposer prompt for scoped progressive-context runs."""
 
@@ -55,11 +57,11 @@ overall system-level redesign:
 
     _ = (budget, selection_policy)
 
-    return f"""# MemoMemo Proposer — iteration {iteration}
+    return f"""# OptiHarness Proposer — iteration {iteration}
 
-You are optimizing the memory layer for LOCOMO conversational-memory QA.
+You are optimizing the memory layer for {benchmark_name}.
 
-Run exactly one iteration. The outer MemoMemo harness will import and evaluate
+Run exactly one iteration. The outer OptiHarness harness will import and evaluate
 the candidate after this session exits. Do not run the full harness evaluation.
 
 ## Assignment
@@ -125,9 +127,14 @@ runtime behavior.
   iteration.
 
 Do not read global run directories, global `candidate_results`, repo-root
-`src/`, `references/vendor`, raw LOCOMO data, or MemoMemo scoring helpers.
-Candidate runtime code must not access `data/locomo/**`,
-`candidate_results/**`, or `memomemo.metrics.score_prediction`.
+`src/`, `references/vendor`, {raw_data_policy}, or OptiHarness scoring helpers.
+Candidate runtime code must not access benchmark raw data, `candidate_results/**`,
+or `memomemo.metrics.score_prediction`.
+The copied `memomemo` package is intentionally benchmark-scoped and incomplete.
+Do not add runtime imports from repo-root harness modules such as
+`memomemo.evaluation`, `memomemo.pareto`, `memomemo.metrics`, optimizer modules,
+or any module not listed in Available Files. Keep `memomemo/__init__.py`
+minimal; do not make it import top-level repository APIs.
 
 ## Edit Scope
 
@@ -152,11 +159,13 @@ such as `mem0_source_path` through the copied source snapshot.
 
 Before writing `pending_eval.json`, verify that the candidate is a real
 mechanism change, is not just a `top_k`/`window`/threshold/weight variant, does
-not use gold answers at inference time, does not hardcode LOCOMO-specific
+not use gold answers at inference time, does not hardcode benchmark-specific
 answers, and uses the isolated source snapshot for source edits.
 Parameter changes are allowed only as supporting details of a mechanism change.
 A candidate whose substantive change is only `top_k`, window size, thresholds,
 weights, prompt length, or context budget will be rejected.
+Run a lightweight syntax/import smoke check against the edited snapshot before
+writing `pending_eval.json`; do not run the full harness evaluation.
 
 ## Required Output
 

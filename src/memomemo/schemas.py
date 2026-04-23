@@ -33,6 +33,7 @@ class LocomoExample:
     category: int
     evidence: tuple[str, ...]
     conversation: tuple[ConversationTurn, ...]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class TaskResult:
     prompt_tokens: int
     completion_tokens: int
     retrieved: list[dict[str, Any]]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

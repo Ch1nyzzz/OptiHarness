@@ -34,11 +34,17 @@ class LocalModelClient:
         base_url: str = DEFAULT_BASE_URL,
         api_key: str = "EMPTY",
         timeout_s: int = 300,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_s = timeout_s
+        self.chat_template_kwargs = (
+            {"enable_thinking": False}
+            if chat_template_kwargs is None
+            else dict(chat_template_kwargs)
+        )
 
     def chat(
         self,
@@ -52,8 +58,9 @@ class LocalModelClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "chat_template_kwargs": {"enable_thinking": False},
         }
+        if self.chat_template_kwargs:
+            payload["chat_template_kwargs"] = self.chat_template_kwargs
         response = httpx.post(
             f"{self.base_url}/chat/completions",
             json=payload,

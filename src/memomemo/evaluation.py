@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from memomemo.locomo import default_data_path, load_locomo_examples, prepare_locomo, select_split
 from memomemo.metrics import passed, score_prediction
@@ -25,6 +25,7 @@ from memomemo.scaffolds import (
 from memomemo.scaffolds.base import (
     MemoryScaffold,
     ScaffoldConfig,
+    ScaffoldRun,
 )
 
 
@@ -46,6 +47,18 @@ class _BuildCache:
     reused_samples: list[str]
 
 
+@dataclass(frozen=True)
+class ScoreResult:
+    """Score assigned to one scaffold answer."""
+
+    score: float
+    passed: bool
+    metadata: dict[str, Any] | None = None
+
+
+ScoreRunFn = Callable[[LocomoExample, ScaffoldRun], ScoreResult]
+
+
 class EvaluationRunner:
     """Evaluate memory scaffold candidates and write a Pareto frontier."""
 
@@ -62,6 +75,7 @@ class EvaluationRunner:
         max_context_chars: int = 6000,
         max_eval_workers: int = 1,
         force: bool = False,
+        score_run: ScoreRunFn | None = None,
     ) -> None:
         self.examples = examples
         self.out_dir = out_dir
@@ -69,6 +83,7 @@ class EvaluationRunner:
         self.max_context_chars = max_context_chars
         self.max_eval_workers = max(1, int(max_eval_workers))
         self.force = force
+        self.score_run = score_run or _default_score_run
         self._build_state_cache: dict[str, dict[str, _CachedState]] = {}
         self.client = LocalModelClient(
             model=model,
@@ -162,6 +177,7 @@ class EvaluationRunner:
         payload = {
             "candidate": candidate.to_dict(),
             "tasks": [item.to_dict() for item in task_results],
+            "score_breakdown": _score_breakdown(task_results),
             "build_cache": {
                 "enabled": build_cache is not None,
                 "build_key": build_cache.build_key if build_cache is not None else None,
@@ -248,18 +264,47 @@ class EvaluationRunner:
                     max_context_chars=self.max_context_chars,
                     dry_run=self.dry_run,
                 )
-        score = score_prediction(run.prediction, example.answer)
+        score_result = self.score_run(example, run)
         return TaskResult(
             task_id=example.task_id,
             question=example.question,
             gold_answer=example.answer,
             prediction=run.prediction,
-            score=score,
-            passed=passed(score),
+            score=score_result.score,
+            passed=score_result.passed,
             prompt_tokens=run.prompt_tokens,
             completion_tokens=run.completion_tokens,
             retrieved=[asdict(hit) for hit in run.retrieved],
+            metadata=dict(score_result.metadata or {}),
         )
+
+
+def _default_score_run(example: LocomoExample, run: ScaffoldRun) -> ScoreResult:
+    score = score_prediction(run.prediction, example.answer)
+    return ScoreResult(score=score, passed=passed(score))
+
+
+def _score_breakdown(task_results: list[TaskResult]) -> dict[str, dict[str, object]]:
+    grouped: dict[str, list[TaskResult]] = {}
+    for item in task_results:
+        key = str(item.metadata.get("question_type") or "all")
+        grouped.setdefault(key, []).append(item)
+    return {
+        key: {
+            "count": len(items),
+            "passrate": (
+                sum(1 for item in items if item.passed) / len(items)
+                if items
+                else 0.0
+            ),
+            "average_score": (
+                sum(item.score for item in items) / len(items)
+                if items
+                else 0.0
+            ),
+        }
+        for key, items in sorted(grouped.items())
+    }
 
 
 def make_initial_candidate_grid(

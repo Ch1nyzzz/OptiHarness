@@ -1,6 +1,6 @@
-# MemoMemo
+# OptiHarness
 
-MemoMemo is a clean memory-specialized evolution harness. It is separate from
+OptiHarness is a clean memory-specialized evolution harness. It is separate from
 `skillevolve` and is scoped to LOCOMO conversational-memory QA.
 
 The first objective axis is `passrate` (maximize). The second objective axis is
@@ -34,7 +34,7 @@ Pareto frontier JSON with those fields.
 ## Install
 
 ```bash
-cd /data/home/yuhan/MemoMemo
+cd /data/home/yuhan/OptiHarness
 python -m pip install -e '.[dev]'
 ```
 
@@ -49,7 +49,7 @@ The mem0 scaffold is source-backed and requires upstream dependencies plus
 LLM/embedding configuration:
 
 ```bash
-memomemo evolve \
+optiharness evolve \
   --split train \
   --limit 20 \
   --scaffolds mem0_source \
@@ -60,7 +60,7 @@ memomemo evolve \
 For optimization, source scaffolds can be used as seed mechanisms:
 
 ```bash
-memomemo optimize \
+optiharness optimize \
   --run-id locomo_memory_source_opt \
   --iterations 20 \
   --split train \
@@ -75,13 +75,47 @@ memomemo optimize \
 The setup can reuse the local SkillEvolve cache if present:
 
 ```bash
-memomemo locomo prepare
+optiharness locomo prepare
 ```
 
 To allow downloading when no local cache exists:
 
 ```bash
-memomemo locomo prepare --allow-download
+optiharness locomo prepare --allow-download
+```
+
+## Run LongMemEval
+
+LongMemEval uses the same memory-scaffold base as LOCOMO and defaults to
+`memgpt_source`. Scoring follows the official LongMemEval LLM-as-judge
+yes/no check, with Together AI `openai/gpt-oss-120b` as the default judge:
+
+```bash
+export TOGETHER_API_KEY=...
+```
+
+Prepare the cleaned LongMemEval-S file from Hugging Face:
+
+```bash
+optiharness longmemeval prepare --variant s --allow-download
+```
+
+Run a dry-run smoke benchmark:
+
+```bash
+optiharness longmemeval benchmark \
+  --variant s \
+  --limit 3 \
+  --out runs/longmemeval_memory_smoke
+```
+
+Optimize it through the shared MemGPT proposer path:
+
+```bash
+optiharness optimize \
+  --task longmemeval \
+  --longmemeval-variant s \
+  --iterations 20
 ```
 
 ## Run Initial Memory Frontier
@@ -89,7 +123,7 @@ memomemo locomo prepare --allow-download
 Dry-run retrieval scoring, useful for a quick plumbing check:
 
 ```bash
-memomemo evolve \
+optiharness evolve \
   --split train \
   --limit 20 \
   --dry-run \
@@ -100,7 +134,7 @@ memomemo evolve \
 Full local-model scoring:
 
 ```bash
-memomemo evolve \
+optiharness evolve \
   --split train \
   --scaffold-extra-json @configs/source_memory.example.json \
   --model /data/home/yuhan/model_zoo/Qwen3-8B \
@@ -121,7 +155,7 @@ Run the built-in `bm25`, `mem0_source`, `memgpt_source`, and
 per split:
 
 ```bash
-memomemo baseline \
+optiharness baseline \
   --splits train,test \
   --repeats 3 \
   --scaffold-extra-json @configs/source_memory.example.json \
@@ -139,6 +173,87 @@ Key outputs:
 - `runs/baselines/train/repeat_01/run_summary.json`
 - `runs/baselines/test/repeat_01/run_summary.json`
 - `runs/baselines/<split>/repeat_<NN>/candidate_results/*.json`
+
+## Run Text Classification Benchmark
+
+OptiHarness also includes the Meta-Harness text-classification benchmark adapter.
+The default datasets now follow the paper setup: USPTO-50k single-step
+retrosynthesis, Symptom2Disease diagnosis prediction, and LawBench crime
+prediction from the MCE artifact. The older patent IPC-section task remains
+available as `USPTO_IPC_SECTION`. Result aggregation and Pareto output use
+OptiHarness's own runner and schemas.
+
+Install the optional dataset dependency:
+
+```bash
+python -m pip install -e '.[dev,benchmark]'
+```
+
+Fetch the paper-compatible USPTO-50k JSONL splits:
+
+```bash
+scripts/fetch_reference_repos.sh
+```
+
+The loader expects MCE artifact data under `references/vendor/mce-artifact/env/`.
+To use another checkout, set `MEMOMEMO_USPTO50K_DATA_DIR`,
+`MEMOMEMO_SYMPTOM2DISEASE_DATA_DIR`, or `MEMOMEMO_LAWBENCH_DATA_DIR`.
+
+Quick plumbing check without model calls:
+
+```bash
+optiharness text-classification benchmark \
+  --dry-run \
+  --num-train 2 \
+  --num-val 1 \
+  --num-test 2 \
+  --out runs/text_classification_smoke
+```
+
+Full local-model baseline:
+
+```bash
+optiharness text-classification benchmark \
+  --memory-systems no_memory,fewshot_all \
+  --mode offline \
+  --model /data/home/yuhan/model_zoo/Qwen3-8B \
+  --base-url http://127.0.0.1:8000/v1 \
+  --out runs/text_classification_baselines
+```
+
+Key outputs:
+
+- `runs/text_classification_baselines/run_summary.json`
+- `runs/text_classification_baselines/candidate_results/*.json`
+- `runs/text_classification_baselines/pareto_frontier.json`
+
+Optimize the few-shot memory construction with the same proposer/sandbox
+pattern as the LOCOMO optimizer, selected through `--task text_classification`.
+Run online and offline as separate tasks:
+
+```bash
+optiharness optimize \
+  --task text_classification \
+  --run-id textcls_fewshot_offline_opt \
+  --text-classification-mode offline \
+  --iterations 20 \
+  --text-classification-num-train 50 \
+  --text-classification-num-val 30 \
+  --text-classification-num-test 0
+
+optiharness optimize \
+  --task text_classification \
+  --run-id textcls_fewshot_online_opt \
+  --text-classification-mode online \
+  --iterations 20 \
+  --text-classification-num-train 50 \
+  --text-classification-num-val 30 \
+  --text-classification-num-test 0
+```
+
+For text-classification optimization, the proposer workspace copies only the
+minimal text-classification source surface. It does not include LOCOMO source,
+LOCOMO data, memory scaffolds, or upstream vendor repositories.
 
 ## Run Claude Proposer Optimization
 
@@ -165,7 +280,7 @@ and `membank`; `bm25` remains a lexical baseline family.
 Small dry-run:
 
 ```bash
-memomemo optimize \
+optiharness optimize \
   --run-id smoke_opt \
   --iterations 1 \
   --limit 3 \
@@ -176,7 +291,7 @@ memomemo optimize \
 Full local-model run:
 
 ```bash
-memomemo optimize \
+optiharness optimize \
   --run-id locomo_memory_opt \
   --iterations 20 \
   --split train \

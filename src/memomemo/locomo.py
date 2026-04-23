@@ -21,7 +21,7 @@ ANSWERABLE_CATEGORIES = frozenset({1, 2, 3, 4})
 
 
 def project_root() -> Path:
-    """Return the MemoMemo repository root."""
+    """Return the OptiHarness repository root."""
 
     return Path(__file__).resolve().parents[2]
 
@@ -44,7 +44,7 @@ def prepare_locomo(
     train_sample_id: str | None = "auto",
     seed: int = 13,
 ) -> dict[str, Any]:
-    """Materialize LOCOMO under MemoMemo and write deterministic splits."""
+    """Materialize LOCOMO under OptiHarness and write deterministic splits."""
 
     dest = dest or default_data_path()
     source = source or _local_skillevolve_cache()

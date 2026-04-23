@@ -391,6 +391,7 @@ def run_codex_prompt(
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd",
         str(agent_cwd),
+        "--ephemeral",
         "--json",
         "-",
     )

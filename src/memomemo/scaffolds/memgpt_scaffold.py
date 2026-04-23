@@ -225,13 +225,14 @@ class _ScoredIndex:
 
 
 def _build_core_memory(example: LocomoExample, extra: dict[str, Any]) -> list[MemGPTMemoryBlock]:
+    benchmark = str(extra.get("benchmark") or "locomo")
     speakers = _unique(turn.speaker for turn in example.conversation)
     sessions = _unique(turn.session for turn in example.conversation)
     dates = [turn.session_date for turn in example.conversation if turn.session_date]
     first_date = dates[0] if dates else "unknown"
     last_date = dates[-1] if dates else "unknown"
     human_value = (
-        f"Conversation sample {example.sample_id} contains {len(example.conversation)} messages "
+        f"{benchmark} conversation sample {example.sample_id} contains {len(example.conversation)} messages "
         f"across {len(sessions)} sessions from {first_date} to {last_date}. "
         f"Participants: {', '.join(speakers) if speakers else 'unknown'}."
     )
@@ -240,7 +241,7 @@ def _build_core_memory(example: LocomoExample, extra: dict[str, Any]) -> list[Me
 
     persona_value = str(
         extra.get("persona_block")
-        or "Answer LOCOMO questions by consulting core memory first, then archival and recall memory."
+        or f"Answer {benchmark} questions by consulting core memory first, then archival and recall memory."
     )
     return [
         MemGPTMemoryBlock(
@@ -278,6 +279,7 @@ def _build_recall_messages(example: LocomoExample) -> list[MemGPTRecallMessage]:
 
 
 def _build_archival_passages(example: LocomoExample, extra: dict[str, Any]) -> list[MemGPTArchivalPassage]:
+    benchmark = str(extra.get("benchmark") or "locomo")
     chunk_size = max(1, int(extra.get("archival_chunk_size", 4)))
     overlap = max(0, int(extra.get("archival_chunk_overlap", 1)))
     passages: list[MemGPTArchivalPassage] = []
@@ -298,7 +300,7 @@ def _build_archival_passages(example: LocomoExample, extra: dict[str, Any]) -> l
                 MemGPTArchivalPassage(
                     passage_id=f"{example.sample_id}:{session}:{start}",
                     text=passage_text,
-                    tags=tuple(["locomo", session, *speakers]),
+                    tags=tuple([benchmark, session, *speakers]),
                     created_at=session_date,
                     turn_indices=tuple(turn.global_index for turn in chunk),
                 )

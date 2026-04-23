@@ -1,4 +1,4 @@
-"""Claude-proposer optimization loop for MemoMemo."""
+"""Claude-proposer optimization loop for OptiHarness."""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from memomemo.baseline import load_baseline_candidates
+from memomemo.benchmark_workspaces import (
+    LOCOMO_WORKSPACE_SPEC,
+    BenchmarkWorkspaceSpec,
+    copy_benchmark_project_source,
+)
 from memomemo.claude_runner import (
     DEFAULT_CODEX_MODEL,
     DEFAULT_DOCKER_ENV_VARS,
@@ -30,6 +35,18 @@ from memomemo.proposer_prompt import build_progressive_proposer_prompt
 from memomemo.scaffolds import DEFAULT_EVOLUTION_SEED_SCAFFOLDS, DEFAULT_SCAFFOLD_TOP_KS
 from memomemo.scaffolds.base import ScaffoldConfig
 from memomemo.schemas import CandidateResult, LocomoExample
+
+
+def _pending_candidates(payload: Any) -> list[Any]:
+    """Accept either {"candidates": [...]} or a top-level candidate list."""
+
+    if isinstance(payload, dict):
+        candidates = payload.get("candidates") or []
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        candidates = []
+    return candidates if isinstance(candidates, list) else []
 
 
 @dataclass(frozen=True)
@@ -71,8 +88,10 @@ class OptimizerConfig:
     proposer_docker_home: str = ""
 
 
-class MemoOptimizer:
-    """Meta-harness-style proposer loop for memory scaffolds."""
+class LocomoOptimizer:
+    """Meta-harness-style proposer loop for LOCOMO memory scaffolds."""
+
+    workspace_spec: BenchmarkWorkspaceSpec = LOCOMO_WORKSPACE_SPEC
 
     def __init__(self, config: OptimizerConfig) -> None:
         self.config = config
@@ -124,21 +143,7 @@ class MemoOptimizer:
                 candidates.append(candidate)
                 self._append_summary(iteration=0, candidate=candidate)
         elif not self.config.skip_scaffold_eval:
-            scaffold_summary = run_initial_frontier(
-                split=self.config.split,
-                limit=self.config.limit,
-                out_dir=self.run_dir,
-                model=self.config.model,
-                base_url=self.config.base_url,
-                api_key=self.config.api_key,
-                timeout_s=self.config.eval_timeout_s,
-                dry_run=self.config.dry_run,
-                max_context_chars=self.config.max_context_chars,
-                max_eval_workers=self.config.max_eval_workers,
-                pareto_quality_threshold=self.config.pareto_quality_threshold,
-                scaffolds=self.config.scaffolds,
-                scaffold_extra=self.config.scaffold_extra,
-            )
+            scaffold_summary = self._run_seed_frontier()
             for item in scaffold_summary.get("candidates", []):
                 candidate = CandidateResult.from_dict(item)
                 candidates.append(candidate)
@@ -269,6 +274,8 @@ class MemoOptimizer:
                 split=self.config.split,
                 limit=self.config.limit,
                 selection_policy="progressive" if adaptive else "default",
+                benchmark_name=self._benchmark_prompt_name(),
+                raw_data_policy=self._raw_data_policy_name(),
             )
             if retry_note:
                 prompt = f"{prompt}\n\n{retry_note}"
@@ -331,6 +338,69 @@ class MemoOptimizer:
             call_dir=call_dir,
             result=result,
         )
+        if (
+            result.returncode == 0
+            and not result.timed_out
+            and not self.pending_eval_path.exists()
+        ):
+            self._append_event(
+                {
+                    "iteration": iteration,
+                    "event": "proposer_missing_pending_retry",
+                    "selection_policy": "progressive" if adaptive else "default",
+                    "budget": budget,
+                    "attempt": max_attempts,
+                }
+            )
+            repair_prompt = (
+                f"{prompt}\n\n"
+                "## Required Repair\n\n"
+                "The previous proposer attempt exited without writing "
+                f"`{workspace_pending_eval_path}`. Continue in the same "
+                "workspace, make a concrete candidate source change if needed, "
+                "and write exactly one valid `pending_eval.json`. Do not run "
+                "the full harness evaluation."
+            )
+            result = self._run_proposer_agent(
+                repair_prompt,
+                log_dir=call_dir / "agent" / "missing_pending_retry",
+                name="proposer",
+                cwd=workspace_dir,
+            )
+            self._append_proposer_result_event(
+                iteration=iteration,
+                result=result,
+                selection_policy="progressive" if adaptive else "default",
+                extra={
+                    "budget": budget,
+                    "reference_iterations": list(reference_iterations),
+                    "target_system": self.config.progressive_target_system,
+                    "call_dir": str(call_dir),
+                    "workspace_dir": str(workspace_dir),
+                    "attempt": "missing_pending_retry",
+                },
+            )
+            access_violations = self._proposer_access_violations(
+                result,
+                workspace_dir=workspace_dir,
+            )
+            if access_violations:
+                self._append_event(
+                    {
+                        "iteration": iteration,
+                        "event": "proposer_access_rejected",
+                        "selection_policy": "progressive" if adaptive else "default",
+                        "budget": budget,
+                        "attempt": "missing_pending_retry",
+                        "violations": access_violations,
+                    }
+                )
+                return []
+            self._archive_workspace_outputs(
+                workspace_dir=workspace_dir,
+                call_dir=call_dir,
+                result=result,
+            )
         if result.returncode != 0 or result.timed_out or not self.pending_eval_path.exists():
             self._append_event(
                 {
@@ -347,9 +417,7 @@ class MemoOptimizer:
             return []
 
         pending = json.loads(self.pending_eval_path.read_text(encoding="utf-8"))
-        proposed = pending.get("candidates") or []
-        if not isinstance(proposed, list):
-            proposed = []
+        proposed = _pending_candidates(pending)
         if len(proposed) != 1:
             self._append_event(
                 {
@@ -546,7 +614,10 @@ class MemoOptimizer:
             ],
             "notes": [
                 "The proposer workspace is self-contained.",
-                "Do not read global runs, repo-root source, references/vendor, raw LOCOMO data, or scoring helpers.",
+                (
+                    "Do not read global runs, repo-root source, references/vendor, "
+                    f"{self._raw_data_policy_name()}, or scoring helpers."
+                ),
             ],
         }
         for dest in (
@@ -671,6 +742,29 @@ class MemoOptimizer:
             selected = selected[: self.config.limit]
         return selected
 
+    def _run_seed_frontier(self) -> dict[str, Any]:
+        return run_initial_frontier(
+            split=self.config.split,
+            limit=self.config.limit,
+            out_dir=self.run_dir,
+            model=self.config.model,
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+            timeout_s=self.config.eval_timeout_s,
+            dry_run=self.config.dry_run,
+            max_context_chars=self.config.max_context_chars,
+            max_eval_workers=self.config.max_eval_workers,
+            pareto_quality_threshold=self.config.pareto_quality_threshold,
+            scaffolds=self.config.scaffolds,
+            scaffold_extra=self.config.scaffold_extra,
+        )
+
+    def _benchmark_prompt_name(self) -> str:
+        return "LOCOMO conversational-memory QA"
+
+    def _raw_data_policy_name(self) -> str:
+        return "raw LOCOMO data"
+
     def _run_proposer_agent(
         self,
         prompt: str,
@@ -721,17 +815,7 @@ class MemoOptimizer:
         proposed: list[dict[str, Any]],
         examples: list[LocomoExample],
     ) -> list[CandidateResult]:
-        runner = EvaluationRunner(
-            examples=examples,
-            out_dir=self.run_dir,
-            model=self.config.model,
-            base_url=self.config.base_url,
-            api_key=self.config.api_key,
-            timeout_s=self.config.eval_timeout_s,
-            dry_run=self.config.dry_run,
-            max_context_chars=self.config.max_context_chars,
-            max_eval_workers=self.config.max_eval_workers,
-        )
+        runner = self._make_evaluation_runner(examples)
         results: list[CandidateResult] = []
         for raw in proposed:
             if isinstance(raw, dict):
@@ -792,6 +876,8 @@ class MemoOptimizer:
             ):
                 if key in raw and key not in extra:
                     extra[key] = raw[key]
+            for key, value in self._candidate_extra_defaults().items():
+                extra.setdefault(key, value)
             config = ScaffoldConfig(
                 top_k=top_k,
                 window=int(raw.get("window", 1)),
@@ -821,6 +907,22 @@ class MemoOptimizer:
             self._append_summary(iteration=iteration, candidate=result, proposal=raw)
         return results
 
+    def _make_evaluation_runner(self, examples: list[LocomoExample]) -> EvaluationRunner:
+        return EvaluationRunner(
+            examples=examples,
+            out_dir=self.run_dir,
+            model=self.config.model,
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+            timeout_s=self.config.eval_timeout_s,
+            dry_run=self.config.dry_run,
+            max_context_chars=self.config.max_context_chars,
+            max_eval_workers=self.config.max_eval_workers,
+        )
+
+    def _candidate_extra_defaults(self) -> dict[str, object]:
+        return {}
+
     def _candidate_code_policy_violations(self, candidate: Any) -> list[dict[str, str]]:
         if not isinstance(candidate, dict):
             return []
@@ -831,9 +933,15 @@ class MemoOptimizer:
             "data/locomo": "runtime code must not read raw LOCOMO data",
             "data\\locomo": "runtime code must not read raw LOCOMO data",
             "locomo10.json": "runtime code must not read raw LOCOMO data",
-            "score_prediction": "runtime code must not call MemoMemo scoring helpers",
-            "memomemo.metrics": "runtime code must not import MemoMemo scoring helpers",
+            "data/longmemeval": "runtime code must not read raw LongMemEval data",
+            "data\\longmemeval": "runtime code must not read raw LongMemEval data",
+            "longmemeval_s_cleaned.json": "runtime code must not read raw LongMemEval data",
+            "longmemeval_m_cleaned.json": "runtime code must not read raw LongMemEval data",
+            "longmemeval_oracle.json": "runtime code must not read raw LongMemEval data",
+            "score_prediction": "runtime code must not call OptiHarness scoring helpers",
+            "memomemo.metrics": "runtime code must not import OptiHarness scoring helpers",
             "load_locomo_examples": "runtime code must not load the full LOCOMO dataset",
+            "load_longmemeval_examples": "runtime code must not load the full LongMemEval dataset",
         }
         source_project = self._candidate_source_project_root(candidate)
         original_source_project = (
@@ -1002,9 +1110,9 @@ class MemoOptimizer:
 
         source_project = self._candidate_source_project_root(candidate)
         if source_project is not None:
-            scaffold_dir = source_project / "src" / "memomemo" / "scaffolds"
-            if scaffold_dir.exists():
-                out.extend(sorted(scaffold_dir.glob("*.py")))
+            package_dir = source_project / "src" / "memomemo"
+            if package_dir.exists():
+                out.extend(sorted(package_dir.rglob("*.py")))
         return sorted(set(out))
 
     def _candidate_source_project_root(self, candidate: dict[str, Any]) -> Path | None:
@@ -1386,8 +1494,9 @@ class MemoOptimizer:
                     f"Target system: {target_system or source_family}",
                     "",
                     "This directory is a writable candidate-specific clean source snapshot.",
-                    "It also contains full project source under `project_source/src/memomemo`",
-                    "and relevant upstream source under `upstream_source` for inspection.",
+                    "It also contains benchmark-scoped project source under",
+                    "`project_source/src/memomemo` and relevant upstream source",
+                    "under `upstream_source` for inspection.",
                     "Historical iterations are diagnostic references only; do not treat",
                     "their source snapshots as editable parents.",
                     "Existing source-backed base memories are read-only. You may edit",
@@ -1408,9 +1517,12 @@ class MemoOptimizer:
             "iteration": iteration,
             "source_family": source_family,
             "target_system": target_system or source_family,
+            "benchmark": self.workspace_spec.benchmark,
             "candidate_dir": str(candidate_dir),
             "project_source": str(project_source),
             "original_project_source": str(original_project_source),
+            "primary_source_file": self.workspace_spec.primary_source_file,
+            "project_source_files": list(self.workspace_spec.source_files),
             "source_files": [str(path) for path in source_files],
         }
         (snapshot_root / "manifest.json").write_text(
@@ -1633,28 +1745,50 @@ class MemoOptimizer:
             return path
         return workspace_dir / rel
 
-    def _copy_tree_if_exists(self, src: Path, dest: Path) -> None:
+    def _copy_tree_if_exists(
+        self,
+        src: Path,
+        dest: Path,
+        *,
+        ignore_names: tuple[str, ...] = (),
+    ) -> None:
         if not src.exists() or not src.is_dir():
             return
         if dest.exists():
             shutil.rmtree(dest)
+        ignore_patterns = (
+            ".git",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            "__pycache__",
+            "*.pyc",
+            *ignore_names,
+        )
         shutil.copytree(
             src,
             dest,
-            ignore=shutil.ignore_patterns(
-                ".git",
-                ".mypy_cache",
-                ".pytest_cache",
-                ".ruff_cache",
-                "__pycache__",
-                "*.pyc",
-            ),
+            ignore=shutil.ignore_patterns(*ignore_patterns),
         )
 
     def _copy_project_source_context(self, dest_dir: Path) -> None:
-        self._copy_tree_if_exists(
-            self.project_root / "src" / "memomemo",
-            dest_dir / "project_source" / "src" / "memomemo",
+        source_pkg = dest_dir / "project_source" / "src" / "memomemo"
+        copied = copy_benchmark_project_source(
+            project_root=self.project_root,
+            dest_pkg=source_pkg,
+            spec=self.workspace_spec,
+        )
+        (dest_dir / "project_source_manifest.json").write_text(
+            json.dumps(
+                {
+                    "benchmark": self.workspace_spec.benchmark,
+                    "primary_source_file": self.workspace_spec.primary_source_file,
+                    "source_files": list(copied),
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
         )
 
     def _source_scaffold_path(self, source_family: str) -> Path | None:
@@ -1829,6 +1963,10 @@ class MemoOptimizer:
         self.summary_path.parent.mkdir(parents=True, exist_ok=True)
         with self.summary_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+LocomoOptimizerConfig = OptimizerConfig
+MemoOptimizer = LocomoOptimizer
 
 
 def _candidate_score(item: CandidateResult) -> tuple[float, int, str]:

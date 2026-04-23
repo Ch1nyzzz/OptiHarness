@@ -22,3 +22,5 @@ clone_or_update rank_bm25 https://github.com/dorianbrown/rank_bm25.git
 clone_or_update mem0 https://github.com/mem0ai/mem0.git
 clone_or_update MemGPT https://github.com/cpacker/MemGPT.git
 clone_or_update MemoryBank-SiliconFriend https://github.com/zhongwanjun/MemoryBank-SiliconFriend.git
+clone_or_update tau2-bench https://github.com/sierra-research/tau2-bench.git
+clone_or_update mce-artifact https://github.com/metaevo-ai/mce-artifact.git

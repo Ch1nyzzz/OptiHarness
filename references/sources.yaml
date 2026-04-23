@@ -22,3 +22,24 @@ membank:
   source_path: references/vendor/MemoryBank-SiliconFriend
   paper: https://arxiv.org/abs/2305.10250
   role: Source-informed MemoryBank scaffold with daily memory docs, summaries, personality memory, forgetting-curve retention, and date-grouped retrieval.
+
+longmemeval:
+  url: https://github.com/xiaowu0162/LongMemEval.git
+  adapter: memomemo.longmemeval.run_longmemeval_frontier
+  source_path: data/longmemeval
+  paper: https://arxiv.org/abs/2410.10813
+  role: Long-term memory QA benchmark adapter using the LOCOMO/MemGPT memory scaffold base system.
+
+tau2_bench:
+  url: https://github.com/sierra-research/tau2-bench.git
+  adapter: memomemo.tau_banking.run_tau_banking_benchmark
+  source_path: references/vendor/tau2-bench
+  paper: https://arxiv.org/abs/2603.04370
+  role: External tau3 banking_knowledge runner for knowledge-intensive tool-agent-user benchmark evaluation.
+
+mce_artifact:
+  url: https://github.com/metaevo-ai/mce-artifact.git
+  adapter: memomemo.text_classification.load_text_classification_splits
+  source_path: references/vendor/mce-artifact
+  paper: https://arxiv.org/abs/2601.21557
+  role: Paper-compatible USPTO-50k, Symptom2Disease, and LawBench text-classification artifact data.

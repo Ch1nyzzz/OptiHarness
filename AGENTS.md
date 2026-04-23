@@ -72,3 +72,11 @@ Do not commit secrets, model API keys, local cache paths, or large generated
 outputs. Source-backed scaffolds may depend on local model endpoints and vendor
 repositories; document non-default paths in the PR description rather than
 hardcoding them.
+
+For `claude-kimi`/Kimi proposer runs, read the `sk...` Kimi/Moonshot credential
+key from environment variables, not from an interactive login or a mounted
+`~/.kimi` directory. If a repo-local `.env` exists, source it before launching
+the run: `set -a && source .env && set +a`. When using the Docker proposer
+sandbox, explicitly pass the credential variable with `--proposer-docker-env`,
+at minimum `KIMI_API_KEY` or `MOONSHOT_API_KEY` as available. Do not ask the
+user to restate this credential policy.
