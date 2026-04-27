@@ -197,6 +197,34 @@ def test_optimizer_can_disable_default_docker_sandbox(tmp_path):
     assert optimizer._proposer_sandbox_config() is None
 
 
+@pytest.mark.parametrize("selection_policy", ["progressive", "bandit"])
+def test_adaptive_selection_policies_require_docker_sandbox(tmp_path, selection_policy):
+    with pytest.raises(ValueError, match="requires --proposer-sandbox docker"):
+        LocomoOptimizer(
+            LocomoOptimizerConfig(
+                run_id="r",
+                out_dir=tmp_path,
+                selection_policy=selection_policy,
+                proposer_sandbox="none",
+                proposer_docker_image="memo-proposer:test",
+            )
+        )
+
+
+@pytest.mark.parametrize("selection_policy", ["progressive", "bandit"])
+def test_adaptive_selection_policies_require_docker_image(tmp_path, selection_policy):
+    with pytest.raises(ValueError, match="requires --proposer-docker-image"):
+        LocomoOptimizer(
+            LocomoOptimizerConfig(
+                run_id="r",
+                out_dir=tmp_path,
+                selection_policy=selection_policy,
+                proposer_sandbox="docker",
+                proposer_docker_image="",
+            )
+        )
+
+
 def test_optimizer_can_run_kimi_proposer_agent(tmp_path, monkeypatch):
     optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
@@ -275,6 +303,7 @@ def test_run_writes_initial_trace_slices(tmp_path, monkeypatch):
             out_dir=tmp_path,
             iterations=0,
             selection_policy="progressive",
+            proposer_docker_image="memo-proposer:test",
         )
     )
     result_path = tmp_path / "candidate_results" / "seed.json"
@@ -605,6 +634,74 @@ def test_progressive_workspace_outputs_sync_and_normalize_candidate_paths(
     assert "bandit_arm" not in pending["candidates"][0]
 
 
+def test_progressive_proposer_retries_invalid_pending_eval_json(tmp_path, monkeypatch):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            proposer_sandbox="none",
+        )
+    )
+    call_dir = tmp_path / "proposer_calls" / "iter_004"
+    workspace = call_dir / "workspace"
+    prompts = []
+    captured = {}
+
+    monkeypatch.setattr(
+        optimizer,
+        "_build_progressive_workspace",
+        lambda **kwargs: (workspace, (1,)),
+    )
+
+    def fake_run_code_agent_prompt(prompt, **kwargs):
+        prompts.append(prompt)
+        assert kwargs["cwd"] == workspace
+        workspace.mkdir(parents=True, exist_ok=True)
+        if len(prompts) == 1:
+            (workspace / "pending_eval.json").write_text(
+                '{"candidates": [{"name": "bad\\candidate", "scaffold_name": "bm25"}]}',
+                encoding="utf-8",
+            )
+        else:
+            (workspace / "pending_eval.json").write_text(
+                json.dumps({"candidates": [{"name": "fixed", "scaffold_name": "bm25"}]}),
+                encoding="utf-8",
+            )
+        return SimpleNamespace(
+            returncode=0,
+            timed_out=False,
+            stderr="",
+            metrics={},
+            usage=None,
+            tool_access={
+                "files_read": {},
+                "files_written": {"pending_eval.json": {"writes": 1}},
+            },
+        )
+
+    def fake_evaluate(iteration, proposed, examples):
+        captured["proposed"] = proposed
+        return []
+
+    monkeypatch.setattr(optimizer_module, "run_code_agent_prompt", fake_run_code_agent_prompt)
+    monkeypatch.setattr(optimizer, "_evaluate_proposed", fake_evaluate)
+
+    optimizer._run_progressive_proposer_iteration(
+        4,
+        [_candidate("seed")],
+        examples=[],
+        budget="medium",
+        adaptive=True,
+    )
+
+    assert len(prompts) == 2
+    assert "invalid JSON" in prompts[1]
+    assert captured["proposed"][0]["name"] == "fixed"
+    summary = (tmp_path / "evolution_summary.jsonl").read_text(encoding="utf-8")
+    assert "proposer_invalid_pending_retry" in summary
+    assert "proposer_invalid_pending_rejected" not in summary
+
+
 def test_progressive_docker_sandbox_maps_container_workspace_paths(tmp_path, monkeypatch):
     optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
@@ -919,6 +1016,226 @@ def test_progressive_workspace_copies_full_summaries_and_selected_raw_refs(tmp_p
     ).exists()
     assert (workspace / "workspace_manifest.json").exists()
     assert (workspace / "access_policy.json").exists()
+
+
+def test_bandit_first_iteration_bootstraps_workspace_and_access_advisory(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    policy = optimizer._bandit_policy_for_workspace(iteration=1, candidates=[])
+    workspace, refs = optimizer._build_progressive_workspace(
+        iteration=1,
+        budget=policy["budget"],
+        existing_candidates=[],
+        call_dir=tmp_path / "proposer_calls" / "iter_001",
+        reference_iterations_override=tuple(policy["reference_iterations"]),
+        trace_scope_override=policy["trace_scope"],
+        bandit_policy=policy,
+    )
+
+    assert policy["budget"] == "low"
+    assert policy["trace_scope"] == "last1"
+    assert refs == ()
+    assignment = json.loads((workspace / "assignment.json").read_text(encoding="utf-8"))
+    assert assignment["bandit_policy"]["hot_files"]
+    access_policy = json.loads((workspace / "access_policy.json").read_text(encoding="utf-8"))
+    assert access_policy["hot_paths"] == policy["hot_files"]
+    assert "read_budget_lines_by_path" in access_policy
+
+
+def test_bandit_state_updates_file_rewards_and_policy_scores(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    call_dir = tmp_path / "proposer_calls" / "iter_001"
+    (call_dir / "agent").mkdir(parents=True)
+    (call_dir / "agent" / "tool_access.json").write_text(
+        json.dumps(
+            {
+                "files_read": {
+                    "summaries/candidate_score_table.json": {"reads": 1, "lines": 40},
+                    "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                        "reads": 2,
+                        "lines": 220,
+                    },
+                },
+                "files_written": {
+                    "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                        "writes": 1
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (call_dir / "diff.patch").write_text(
+        "diff --git a/src/memomemo/scaffolds/memgpt_scaffold.py "
+        "b/src/memomemo/scaffolds/memgpt_scaffold.py\n",
+        encoding="utf-8",
+    )
+
+    evaluated = [_scored_candidate("iter001_better_top8", passrate=0.35)]
+    optimizer._update_bandit_state(
+        iteration=1,
+        previous_best_passrate=0.2,
+        evaluated=evaluated,
+        call_dir=call_dir,
+    )
+
+    state = json.loads(optimizer.bandit_state_path.read_text(encoding="utf-8"))
+    source = state["files"][
+        "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py"
+    ]
+    assert state["total_iters"] == 1
+    assert state["success_iters"] == 1
+    assert source["read_iters"] == 1
+    assert source["success_iters"] == 1
+    assert source["reward_sum"] == pytest.approx(0.15)
+    assert source["read_calls"] == 2
+    assert source["read_lines"] == 220
+    assert source["write_iters"] == 1
+    assert isinstance(source["policy_score"], float)
+
+
+def test_bandit_failed_proposer_records_read_cost_without_success(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    call_dir = tmp_path / "proposer_calls" / "iter_001"
+    (call_dir / "agent").mkdir(parents=True)
+    (call_dir / "agent" / "tool_access.json").write_text(
+        json.dumps({"files_read": {"summaries/evolution_summary.jsonl": {"reads": 1, "lines": 900}}}),
+        encoding="utf-8",
+    )
+
+    optimizer._update_bandit_state(
+        iteration=1,
+        previous_best_passrate=0.2,
+        evaluated=[],
+        call_dir=call_dir,
+    )
+
+    state = json.loads(optimizer.bandit_state_path.read_text(encoding="utf-8"))
+    row = state["files"]["summaries/evolution_summary.jsonl"]
+    assert state["success_iters"] == 0
+    assert row["read_iters"] == 1
+    assert row["success_iters"] == 0
+    assert row["reward_sum"] < 0
+
+
+def test_bandit_iters_from_policy_paths_extracts_reference_iterations(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    paths = [
+        "source_snapshot/candidate/project_source/src/memomemo/model.py",
+        "reference_iterations/iter_017/pending_eval.json",
+        "reference_iterations/iter_005/eval/retrieval_diagnostics.json",
+        "reference_iterations/iter_017/diff.patch",   # duplicate iter
+        "summaries/candidate_score_table.json",
+    ]
+    assert optimizer._iters_from_policy_paths(paths) == [17, 5]
+
+
+def test_bandit_policy_high_budget_after_long_stagnation(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer.bandit_state_path.write_text(
+        json.dumps({"total_iters": 12, "success_iters": 4, "files": {"x": {"policy_score": 0.1}}}),
+        encoding="utf-8",
+    )
+    candidates = [_scored_candidate("iter001_better_top8", passrate=0.5)]
+    candidates += [
+        _scored_candidate(f"iter{n:03d}_step_top8", passrate=0.3) for n in range(2, 13)
+    ]
+    for n in range(1, 13):
+        (tmp_path / "proposer_calls" / f"iter_{n:03d}").mkdir(parents=True, exist_ok=True)
+
+    policy = optimizer._bandit_policy_for_workspace(iteration=13, candidates=candidates)
+
+    assert policy["budget"] == "high"
+    assert policy["trace_scope"] == "all"
+    assert sorted(policy["reference_iterations"]) == list(range(1, 13))
+    assert policy["cold_files"] == []
+
+
+def test_bandit_policy_hot_paths_drive_reference_selection(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    optimizer.bandit_state_path.write_text(
+        json.dumps(
+            {
+                "total_iters": 5,
+                "success_iters": 2,
+                "files": {
+                    "reference_iterations/iter_004/pending_eval.json": {"policy_score": 0.3},
+                    "reference_iterations/iter_002/diff.patch": {"policy_score": 0.2},
+                    "reference_iterations/iter_001/pending_eval.json": {"policy_score": 0.1},
+                    "source_snapshot/candidate/project_source/src/memomemo/model.py": {
+                        "policy_score": 0.05
+                    },
+                },
+                "last_policy": {
+                    "hot_files": [
+                        "reference_iterations/iter_004/pending_eval.json",
+                        "reference_iterations/iter_002/diff.patch",
+                    ],
+                    "warm_files": [
+                        "reference_iterations/iter_001/pending_eval.json",
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidates = [
+        _scored_candidate("iter001_a_top8", passrate=0.4),
+        _scored_candidate("iter002_b_top8", passrate=0.45),
+        _scored_candidate("iter003_c_top8", passrate=0.3),
+        _scored_candidate("iter004_d_top8", passrate=0.5),
+        _scored_candidate("iter005_e_top8", passrate=0.5),
+    ]
+    for n in range(1, 6):
+        (tmp_path / "proposer_calls" / f"iter_{n:03d}").mkdir(parents=True, exist_ok=True)
+
+    policy = optimizer._bandit_policy_for_workspace(iteration=6, candidates=candidates)
+
+    refs = list(policy["reference_iterations"])
+    # hot iters come first (4, 2), warm next (1), then fallback fills up to cap
+    assert refs[0] == 4
+    assert refs[1] == 2
+    # cap = 5 for medium, 2 for low; either way iter_004 and iter_002 must be ahead of fallback-only iters
+    assert len(refs) <= 5
+
+
+def test_bandit_state_normalizes_diff_host_paths(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    call_dir = tmp_path / "proposer_calls" / "iter_001"
+    (call_dir / "agent").mkdir(parents=True)
+    (call_dir / "agent" / "tool_access.json").write_text(
+        json.dumps(
+            {
+                "files_read": {
+                    "/workspace/source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                        "reads": 1,
+                        "lines": 220,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (call_dir / "diff.patch").write_text(
+        "diff --git a/runs/r/proposer_calls/iter_001/source_snapshot/candidate/original_project_source/src/memomemo/scaffolds/memgpt_scaffold.py "
+        "b/runs/r/proposer_calls/iter_001/source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py\n",
+        encoding="utf-8",
+    )
+
+    optimizer._update_bandit_state(
+        iteration=1,
+        previous_best_passrate=0.2,
+        evaluated=[_scored_candidate("iter001_better_top8", passrate=0.35)],
+        call_dir=call_dir,
+    )
+
+    state = json.loads(optimizer.bandit_state_path.read_text(encoding="utf-8"))
+    keys = list(state["files"].keys())
+    assert all(not key.startswith("runs/") for key in keys), keys
+    target_key = "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py"
+    assert target_key in state["files"], keys
+    row = state["files"][target_key]
+    assert row["changed_iters"] == 1
+    assert row["read_iters"] == 1
 
 
 def test_optimizer_records_and_aggregates_proposer_metrics(tmp_path):

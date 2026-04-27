@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import shutil
 import subprocess
 import time
@@ -77,6 +79,12 @@ class OptimizerConfig:
     selection_policy: str = "default"
     progressive_target_system: str = "memgpt"
     progressive_initial_low_iterations: int = 5
+    bandit_prior_weight: float = 0.4
+    bandit_exploration_c: float = 0.08
+    bandit_cost_lambda: float = 0.04
+    bandit_line_scale: int = 200
+    bandit_min_core_files: bool = True
+    bandit_stagnation_threshold: int = 4
     pareto_quality_threshold: float = 0.125
     proposer_sandbox: str = "docker"
     proposer_docker_image: str = ""
@@ -102,12 +110,28 @@ class LocomoOptimizer:
         self.summary_path = self.run_dir / "evolution_summary.jsonl"
         self.generated_dir = self.run_dir / "generated"
         self.progressive_state_path = self.run_dir / "progressive_state.json"
+        self.bandit_state_path = self.run_dir / "bandit_state.json"
         self.candidate_score_table_path = self.run_dir / "candidate_score_table.json"
         self.retrieval_diagnostics_summary_path = (
             self.run_dir / "retrieval_diagnostics_summary.json"
         )
         self.iteration_index_path = self.run_dir / "iteration_index.json"
         self.diff_summary_path = self.run_dir / "diff_summary.jsonl"
+        self._validate_proposer_sandbox_policy()
+
+    def _validate_proposer_sandbox_policy(self) -> None:
+        policy = self.config.selection_policy.strip().lower()
+        if policy not in {"progressive", "bandit"}:
+            return
+        sandbox = self.config.proposer_sandbox.strip().lower()
+        if sandbox != "docker":
+            raise ValueError(
+                f"{policy} selection policy requires --proposer-sandbox docker"
+            )
+        if not self.config.proposer_docker_image.strip():
+            raise ValueError(
+                f"{policy} selection policy requires --proposer-docker-image"
+            )
 
     def run(self) -> dict[str, Any]:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -166,7 +190,14 @@ class LocomoOptimizer:
 
         for iteration in range(1, self.config.iterations + 1):
             previous_best_passrate = self._best_passrate(candidates)
-            if self.config.selection_policy == "progressive":
+            bandit_policy: dict[str, Any] | None = None
+            if self.config.selection_policy == "bandit":
+                bandit_policy = self._bandit_policy_for_workspace(
+                    iteration=iteration,
+                    candidates=candidates,
+                )
+                budget = str(bandit_policy.get("budget") or "low")
+            elif self.config.selection_policy == "progressive":
                 budget = self._progressive_budget_for_iteration(iteration)
             else:
                 budget = "high"
@@ -175,7 +206,9 @@ class LocomoOptimizer:
                 candidates,
                 examples,
                 budget=budget,
-                adaptive=self.config.selection_policy == "progressive",
+                adaptive=self.config.selection_policy in {"progressive", "bandit"},
+                selection_policy=self.config.selection_policy,
+                bandit_policy=bandit_policy,
             )
             candidates.extend(evaluated)
             self._save_best_candidates(candidates)
@@ -196,6 +229,13 @@ class LocomoOptimizer:
                     candidates=candidates,
                     evaluated=evaluated,
                 )
+            if self.config.selection_policy == "bandit":
+                self._update_bandit_state(
+                    iteration=iteration,
+                    previous_best_passrate=previous_best_passrate,
+                    evaluated=evaluated,
+                    call_dir=self._iteration_dir(iteration),
+                )
 
         final_summary = {
             "run_id": self.config.run_id,
@@ -206,6 +246,9 @@ class LocomoOptimizer:
             "selection_policy": self.config.selection_policy,
             "proposer_metrics": self._aggregate_proposer_metrics(),
         }
+        if self.config.selection_policy == "bandit":
+            final_summary["bandit_state_path"] = str(self.bandit_state_path)
+            final_summary["bandit_policy"] = self._load_bandit_state().get("last_policy", {})
         (self.run_dir / "optimizer_summary.json").write_text(
             json.dumps(final_summary, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -234,6 +277,8 @@ class LocomoOptimizer:
         *,
         budget: str,
         adaptive: bool,
+        selection_policy: str | None = None,
+        bandit_policy: dict[str, Any] | None = None,
     ) -> list[CandidateResult]:
         if self.pending_eval_path.exists():
             self.pending_eval_path.unlink()
@@ -244,12 +289,24 @@ class LocomoOptimizer:
         workspace_dir = call_dir / "workspace"
         workspace_generated_dir = workspace_dir / "generated"
         reference_iterations: tuple[int, ...] = ()
+        policy_name = selection_policy or ("progressive" if adaptive else "default")
         for attempt in range(1, max_attempts + 1):
             workspace_dir, reference_iterations = self._build_progressive_workspace(
                 iteration=iteration,
                 budget=budget,
                 existing_candidates=existing_candidates,
                 call_dir=call_dir,
+                reference_iterations_override=(
+                    tuple(int(item) for item in bandit_policy.get("reference_iterations", ()))
+                    if bandit_policy
+                    else None
+                ),
+                trace_scope_override=(
+                    str(bandit_policy.get("trace_scope"))
+                    if bandit_policy and bandit_policy.get("trace_scope")
+                    else None
+                ),
+                bandit_policy=bandit_policy,
             )
             workspace_generated_dir = workspace_dir / "generated"
             workspace_source_snapshot_dir = workspace_dir / "source_snapshot"
@@ -273,7 +330,8 @@ class LocomoOptimizer:
                 ),
                 split=self.config.split,
                 limit=self.config.limit,
-                selection_policy="progressive" if adaptive else "default",
+                selection_policy=policy_name,
+                bandit_policy=bandit_policy,
                 benchmark_name=self._benchmark_prompt_name(),
                 raw_data_policy=self._raw_data_policy_name(),
             )
@@ -288,7 +346,7 @@ class LocomoOptimizer:
             self._append_proposer_result_event(
                 iteration=iteration,
                 result=result,
-                selection_policy="progressive" if adaptive else "default",
+                selection_policy=policy_name,
                 extra={
                     "budget": budget,
                     "reference_iterations": list(reference_iterations),
@@ -296,6 +354,11 @@ class LocomoOptimizer:
                     "call_dir": str(call_dir),
                     "workspace_dir": str(workspace_dir),
                     "attempt": attempt,
+                    "bandit_policy_score_snapshot": (
+                        bandit_policy.get("policy_score_snapshot", {})
+                        if bandit_policy
+                        else {}
+                    ),
                 },
             )
             access_violations = self._proposer_access_violations(
@@ -309,7 +372,7 @@ class LocomoOptimizer:
                     {
                         "iteration": iteration,
                         "event": "proposer_access_retry",
-                        "selection_policy": "progressive" if adaptive else "default",
+                        "selection_policy": policy_name,
                         "budget": budget,
                         "attempt": attempt,
                         "violations": access_violations,
@@ -324,7 +387,7 @@ class LocomoOptimizer:
                 {
                     "iteration": iteration,
                     "event": "proposer_access_rejected",
-                    "selection_policy": "progressive" if adaptive else "default",
+                    "selection_policy": policy_name,
                     "budget": budget,
                     "attempt": attempt,
                     "violations": access_violations,
@@ -347,7 +410,7 @@ class LocomoOptimizer:
                 {
                     "iteration": iteration,
                     "event": "proposer_missing_pending_retry",
-                    "selection_policy": "progressive" if adaptive else "default",
+                    "selection_policy": policy_name,
                     "budget": budget,
                     "attempt": max_attempts,
                 }
@@ -370,7 +433,7 @@ class LocomoOptimizer:
             self._append_proposer_result_event(
                 iteration=iteration,
                 result=result,
-                selection_policy="progressive" if adaptive else "default",
+                selection_policy=policy_name,
                 extra={
                     "budget": budget,
                     "reference_iterations": list(reference_iterations),
@@ -378,6 +441,11 @@ class LocomoOptimizer:
                     "call_dir": str(call_dir),
                     "workspace_dir": str(workspace_dir),
                     "attempt": "missing_pending_retry",
+                    "bandit_policy_score_snapshot": (
+                        bandit_policy.get("policy_score_snapshot", {})
+                        if bandit_policy
+                        else {}
+                    ),
                 },
             )
             access_violations = self._proposer_access_violations(
@@ -389,7 +457,7 @@ class LocomoOptimizer:
                     {
                         "iteration": iteration,
                         "event": "proposer_access_rejected",
-                        "selection_policy": "progressive" if adaptive else "default",
+                        "selection_policy": policy_name,
                         "budget": budget,
                         "attempt": "missing_pending_retry",
                         "violations": access_violations,
@@ -406,7 +474,7 @@ class LocomoOptimizer:
                 {
                     "iteration": iteration,
                     "event": "proposer_failed",
-                    "selection_policy": "progressive" if adaptive else "default",
+                    "selection_policy": policy_name,
                     "budget": budget,
                     "returncode": result.returncode,
                     "timed_out": result.timed_out,
@@ -416,14 +484,107 @@ class LocomoOptimizer:
             )
             return []
 
-        pending = json.loads(self.pending_eval_path.read_text(encoding="utf-8"))
+        try:
+            pending = json.loads(self.pending_eval_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            self._append_event(
+                {
+                    "iteration": iteration,
+                    "event": "proposer_invalid_pending_retry",
+                    "selection_policy": policy_name,
+                    "budget": budget,
+                    "attempt": "json_parse_retry",
+                    "error": str(exc),
+                }
+            )
+            repair_prompt = (
+                f"{prompt}\n\n"
+                "## Required Repair\n\n"
+                f"The previous proposer wrote invalid JSON to `{workspace_pending_eval_path}`: "
+                f"{exc}. Rewrite that file as exactly one valid JSON object with a "
+                "`candidates` array containing one candidate. Escape backslashes inside "
+                "strings as `\\\\`, or remove them. Do not run the full harness evaluation."
+            )
+            result = self._run_proposer_agent(
+                repair_prompt,
+                log_dir=call_dir / "agent" / "invalid_pending_retry",
+                name="proposer",
+                cwd=workspace_dir,
+            )
+            self._append_proposer_result_event(
+                iteration=iteration,
+                result=result,
+                selection_policy=policy_name,
+                extra={
+                    "budget": budget,
+                    "reference_iterations": list(reference_iterations),
+                    "target_system": self.config.progressive_target_system,
+                    "call_dir": str(call_dir),
+                    "workspace_dir": str(workspace_dir),
+                    "attempt": "invalid_pending_retry",
+                    "bandit_policy_score_snapshot": (
+                        bandit_policy.get("policy_score_snapshot", {})
+                        if bandit_policy
+                        else {}
+                    ),
+                },
+            )
+            access_violations = self._proposer_access_violations(
+                result,
+                workspace_dir=workspace_dir,
+            )
+            if access_violations:
+                self._append_event(
+                    {
+                        "iteration": iteration,
+                        "event": "proposer_access_rejected",
+                        "selection_policy": policy_name,
+                        "budget": budget,
+                        "attempt": "invalid_pending_retry",
+                        "violations": access_violations,
+                    }
+                )
+                return []
+            self._archive_workspace_outputs(
+                workspace_dir=workspace_dir,
+                call_dir=call_dir,
+                result=result,
+            )
+            if result.returncode != 0 or result.timed_out or not self.pending_eval_path.exists():
+                self._append_event(
+                    {
+                        "iteration": iteration,
+                        "event": "proposer_failed",
+                        "selection_policy": policy_name,
+                        "budget": budget,
+                        "returncode": result.returncode,
+                        "timed_out": result.timed_out,
+                        "stderr": result.stderr[:1000],
+                        "proposer_metrics": getattr(result, "metrics", {}),
+                    }
+                )
+                return []
+            try:
+                pending = json.loads(self.pending_eval_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as retry_exc:
+                self._append_event(
+                    {
+                        "iteration": iteration,
+                        "event": "proposer_invalid_pending_rejected",
+                        "selection_policy": policy_name,
+                        "budget": budget,
+                        "attempt": "invalid_pending_retry",
+                        "error": str(retry_exc),
+                    }
+                )
+                return []
         proposed = _pending_candidates(pending)
         if len(proposed) != 1:
             self._append_event(
                 {
                     "iteration": iteration,
                     "event": "candidate_count_adjusted",
-                    "selection_policy": "progressive" if adaptive else "default",
+                    "selection_policy": policy_name,
                     "budget": budget,
                     "requested_count": len(proposed),
                     "evaluated_count": min(len(proposed), 1),
@@ -473,6 +634,9 @@ class LocomoOptimizer:
         budget: str,
         existing_candidates: list[CandidateResult],
         call_dir: Path,
+        reference_iterations_override: tuple[int, ...] | None = None,
+        trace_scope_override: str | None = None,
+        bandit_policy: dict[str, Any] | None = None,
     ) -> tuple[Path, tuple[int, ...]]:
         call_dir.mkdir(parents=True, exist_ok=True)
         workspace_dir = call_dir / "workspace"
@@ -484,20 +648,27 @@ class LocomoOptimizer:
         workspace_generated_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_package_dirs(workspace_generated_dir, root=workspace_generated_dir)
 
-        reference_iterations = self._reference_iterations_for_budget(
-            budget,
-            iteration=iteration,
-            candidates=existing_candidates,
+        reference_iterations = (
+            reference_iterations_override
+            if reference_iterations_override is not None
+            else self._reference_iterations_for_budget(
+                budget,
+                iteration=iteration,
+                candidates=existing_candidates,
+            )
         )
         assignment = {
             "iteration": iteration,
             "target_system": self.config.progressive_target_system,
             "budget": budget,
             "reference_iterations": list(reference_iterations),
+            "trace_scope": trace_scope_override or self._trace_scope_for_budget(budget),
             "generated_dir": str(workspace_generated_dir),
             "source_snapshot_dir": str(workspace_dir / "source_snapshot"),
             "pending_eval_path": str(workspace_dir / "pending_eval.json"),
         }
+        if bandit_policy:
+            assignment["bandit_policy"] = bandit_policy
         for dest in (call_dir / "assignment.json", workspace_dir / "assignment.json"):
             dest.write_text(json.dumps(assignment, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -506,6 +677,7 @@ class LocomoOptimizer:
             workspace_dir / "reference_iterations",
             reference_iterations=reference_iterations,
             budget=budget,
+            trace_scope=trace_scope_override,
         )
         self._build_source_snapshot_workspace(
             iteration=iteration,
@@ -525,6 +697,7 @@ class LocomoOptimizer:
             source_snapshot_dir=workspace_dir / "source_snapshot",
             generated_dir=workspace_generated_dir,
             pending_eval_path=workspace_dir / "pending_eval.json",
+            bandit_policy=bandit_policy,
         )
         return workspace_dir, reference_iterations
 
@@ -555,9 +728,10 @@ class LocomoOptimizer:
         *,
         reference_iterations: tuple[int, ...],
         budget: str,
+        trace_scope: str | None = None,
     ) -> None:
         reference_dir.mkdir(parents=True, exist_ok=True)
-        trace_scope = self._trace_scope_for_budget(budget)
+        trace_scope = trace_scope or self._trace_scope_for_budget(budget)
         for item in reference_iterations:
             src = self._iteration_dir(item)
             if not src.exists():
@@ -598,6 +772,7 @@ class LocomoOptimizer:
         source_snapshot_dir: Path,
         generated_dir: Path,
         pending_eval_path: Path,
+        bandit_policy: dict[str, Any] | None = None,
     ) -> None:
         policy = {
             "read_roots": [str(workspace_dir)],
@@ -620,6 +795,17 @@ class LocomoOptimizer:
                 ),
             ],
         }
+        if bandit_policy:
+            policy.update(
+                {
+                    "hot_paths": list(bandit_policy.get("hot_files", ())),
+                    "warm_paths": list(bandit_policy.get("warm_files", ())),
+                    "cold_paths": list(bandit_policy.get("cold_files", ())),
+                    "read_budget_lines_by_path": dict(
+                        bandit_policy.get("read_budget_lines_by_path", {})
+                    ),
+                }
+            )
         for dest in (
             workspace_dir / "access_policy.json",
             workspace_dir.parent / "access_policy.json",
@@ -1236,6 +1422,380 @@ class LocomoOptimizer:
             encoding="utf-8",
         )
 
+    def _load_bandit_state(self) -> dict[str, Any]:
+        if not self.bandit_state_path.exists():
+            return {
+                "total_iters": 0,
+                "success_iters": 0,
+                "global_reward_sum": 0.0,
+                "files": {},
+                "last_policy": {},
+            }
+        try:
+            payload = json.loads(self.bandit_state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {
+                "total_iters": 0,
+                "success_iters": 0,
+                "global_reward_sum": 0.0,
+                "files": {},
+                "last_policy": {},
+            }
+        return payload if isinstance(payload, dict) else {}
+
+    def _bandit_policy_for_workspace(
+        self,
+        *,
+        iteration: int,
+        candidates: list[CandidateResult],
+    ) -> dict[str, Any]:
+        state = self._load_bandit_state()
+        files = state.get("files") if isinstance(state.get("files"), dict) else {}
+        scored = sorted(
+            (
+                (str(path), float(info.get("policy_score") or 0.0))
+                for path, info in files.items()
+                if isinstance(info, dict)
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )
+        core_files = self._bandit_core_files()
+        hot = _dedupe_list(core_files + [path for path, _ in scored[:8]])
+        warm = _dedupe_list([path for path, _ in scored[8:20]])
+
+        last_improvement = self._bandit_last_improvement_iteration(candidates) or 0
+        stagnation = max(0, iteration - last_improvement - 1)
+        stagnated = stagnation >= self.config.bandit_stagnation_threshold
+
+        if iteration <= 1 or not files:
+            budget = "low"
+            trace_scope = "last1"
+            reference_iterations: tuple[int, ...] = ()
+        elif stagnated:
+            budget = "high"
+            trace_scope = "all"
+            reference_iterations = self._bandit_reference_iterations(
+                iteration=iteration,
+                candidates=candidates,
+                state=state,
+                budget=budget,
+            )
+        else:
+            budget = "medium"
+            trace_scope = "last3"
+            reference_iterations = self._bandit_reference_iterations(
+                iteration=iteration,
+                candidates=candidates,
+                state=state,
+                budget=budget,
+            )
+
+        cold = (
+            []
+            if stagnated
+            else _dedupe_list([path for path, score in scored if score < 0.0])[:12]
+        )
+        read_budget = {
+            path: (800 if path in hot else 300)
+            for path in _dedupe_list(hot + warm + cold)
+        }
+        policy = {
+            "budget": budget,
+            "reference_iterations": list(reference_iterations),
+            "trace_scope": trace_scope,
+            "hot_files": hot,
+            "warm_files": warm,
+            "cold_files": cold,
+            "read_budget_lines_by_path": read_budget,
+            "policy_score_snapshot": {path: score for path, score in scored[:20]},
+        }
+        state["last_policy"] = policy
+        self.bandit_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.bandit_state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return policy
+
+    def _bandit_reference_iterations(
+        self,
+        *,
+        iteration: int,
+        candidates: list[CandidateResult],
+        state: dict[str, Any],
+        budget: str,
+    ) -> tuple[int, ...]:
+        available = {
+            item
+            for item in self._candidate_iterations(candidates)
+            if 0 < item < iteration and self._iteration_dir(item).exists()
+        }
+        if budget == "high":
+            return tuple(sorted(available))
+
+        last_policy = (
+            state.get("last_policy")
+            if isinstance(state.get("last_policy"), dict)
+            else {}
+        ) or {}
+        hot_iters = self._iters_from_policy_paths(
+            list(last_policy.get("hot_files") or [])
+            + list(last_policy.get("warm_files") or [])
+        )
+        fallback: list[int] = []
+        fallback.extend(self._best_iterations(candidates, k=3))
+        last_improvement = self._bandit_last_improvement_iteration(candidates)
+        if last_improvement is not None:
+            fallback.append(last_improvement)
+
+        cap = 5
+        out: list[int] = []
+        seen: set[int] = set()
+        for item in list(hot_iters) + fallback:
+            if item in available and item not in seen:
+                out.append(item)
+                seen.add(item)
+            if len(out) >= cap:
+                break
+        return tuple(out)
+
+    def _update_bandit_state(
+        self,
+        *,
+        iteration: int,
+        previous_best_passrate: float,
+        evaluated: list[CandidateResult],
+        call_dir: Path,
+    ) -> None:
+        state = self._load_bandit_state()
+        files = state.setdefault("files", {})
+        if not isinstance(files, dict):
+            files = {}
+            state["files"] = files
+
+        tool_access = self._load_json_file(call_dir / "agent" / "tool_access.json")
+        if not isinstance(tool_access, dict):
+            tool_access = self._latest_proposer_tool_access(iteration)
+        read_paths = self._bandit_read_paths(tool_access)
+        written_paths = self._bandit_written_paths(tool_access)
+        changed_paths = sorted({
+            self._bandit_normalize_access_path(path)
+            for path in self._changed_paths_from_diff(call_dir / "diff.patch")
+        })
+        best_eval_passrate = max((item.passrate for item in evaluated), default=0.0)
+        eps = 1e-12
+        entered_best = previous_best_passrate > 0.0 and any(
+            item.passrate >= previous_best_passrate - eps for item in evaluated
+        )
+        success = bool(
+            evaluated and (best_eval_passrate > previous_best_passrate + eps or entered_best)
+        )
+        reward = max(0.0, best_eval_passrate - previous_best_passrate)
+        if not evaluated and read_paths:
+            reward = -0.005
+
+        state["total_iters"] = int(state.get("total_iters") or 0) + 1
+        if success:
+            state["success_iters"] = int(state.get("success_iters") or 0) + 1
+        state["global_reward_sum"] = float(state.get("global_reward_sum") or 0.0) + reward
+
+        for path, stats in read_paths.items():
+            row = files.setdefault(path, self._empty_bandit_file_state())
+            row["read_iters"] = int(row.get("read_iters") or 0) + 1
+            row["read_calls"] = int(row.get("read_calls") or 0) + int(stats.get("reads") or 0)
+            row["read_lines"] = int(row.get("read_lines") or 0) + int(stats.get("lines") or 0)
+            row["reward_sum"] = float(row.get("reward_sum") or 0.0) + reward
+            if success:
+                row["success_iters"] = int(row.get("success_iters") or 0) + 1
+        for path in written_paths:
+            row = files.setdefault(path, self._empty_bandit_file_state())
+            row["write_iters"] = int(row.get("write_iters") or 0) + 1
+        for path in changed_paths:
+            row = files.setdefault(path, self._empty_bandit_file_state())
+            row["changed_iters"] = int(row.get("changed_iters") or 0) + 1
+
+        self._recompute_bandit_scores(state)
+        self.bandit_state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _recompute_bandit_scores(self, state: dict[str, Any]) -> None:
+        files = state.get("files") if isinstance(state.get("files"), dict) else {}
+        total_iters = max(1, int(state.get("total_iters") or 0))
+        p_global = float(state.get("success_iters") or 0) / total_iters
+        global_reward = float(state.get("global_reward_sum") or 0.0) / total_iters
+        alpha = 5.0
+        for info in files.values():
+            if not isinstance(info, dict):
+                continue
+            read_iters = int(info.get("read_iters") or 0)
+            p_file = (
+                float(info.get("success_iters") or 0) + alpha * p_global
+            ) / (read_iters + alpha)
+            mean_reward = (
+                float(info.get("reward_sum") or 0.0)
+                + alpha * self.config.bandit_prior_weight * global_reward
+            ) / (read_iters + alpha)
+            avg_lines = float(info.get("read_lines") or 0) / max(1, read_iters)
+            cost = self.config.bandit_cost_lambda * math.log1p(
+                avg_lines / max(1, self.config.bandit_line_scale)
+            )
+            bonus = self.config.bandit_exploration_c * math.sqrt(
+                math.log(total_iters + 1) / (read_iters + 1)
+            )
+            binary_utility = p_file - p_global
+            reward_utility = mean_reward - global_reward
+            score = 0.7 * binary_utility + 0.3 * reward_utility - cost + bonus
+            info["utility"] = 0.7 * binary_utility + 0.3 * reward_utility
+            info["policy_score"] = score
+            info.setdefault("cooldown_until", 0)
+
+    def _empty_bandit_file_state(self) -> dict[str, Any]:
+        return {
+            "read_iters": 0,
+            "success_iters": 0,
+            "reward_sum": 0.0,
+            "read_calls": 0,
+            "read_lines": 0,
+            "write_iters": 0,
+            "changed_iters": 0,
+            "utility": 0.0,
+            "policy_score": 0.0,
+            "cooldown_until": 0,
+        }
+
+    def _bandit_core_files(self) -> list[str]:
+        if not self.config.bandit_min_core_files:
+            return []
+        source_files = set(self.workspace_spec.source_files)
+        target_files = [self.workspace_spec.primary_source_file]
+        scaffold_path = self._source_scaffold_path(self.config.progressive_target_system)
+        if scaffold_path is not None:
+            rel = f"scaffolds/{scaffold_path.name}"
+            if rel in source_files:
+                target_files.append(rel)
+        target_files.extend(
+            rel
+            for rel in ("scaffolds/base.py", "model.py", "schemas.py")
+            if rel in source_files
+        )
+        project_paths = [
+            f"source_snapshot/candidate/project_source/src/memomemo/{rel}"
+            for rel in _dedupe_list(target_files)
+        ]
+        return _dedupe_list(
+            project_paths
+            + [
+                "summaries/candidate_score_table.json",
+                "summaries/retrieval_diagnostics_summary.json",
+                "summaries/diff_summary.jsonl",
+            ]
+        )
+
+    def _bandit_read_paths(self, tool_access: dict[str, Any]) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        raw = tool_access.get("files_read") if isinstance(tool_access, dict) else {}
+        if not isinstance(raw, dict):
+            return out
+        for path, stats in raw.items():
+            normalized = self._bandit_normalize_access_path(str(path))
+            info = stats if isinstance(stats, dict) else {}
+            out[normalized] = {
+                "reads": max(1, int(info.get("reads") or 1)),
+                "lines": int(info.get("lines") or 0),
+            }
+        return out
+
+    def _bandit_written_paths(self, tool_access: dict[str, Any]) -> list[str]:
+        raw = tool_access.get("files_written") if isinstance(tool_access, dict) else {}
+        if not isinstance(raw, dict):
+            return []
+        return sorted({self._bandit_normalize_access_path(str(path)) for path in raw})
+
+    def _bandit_normalize_access_path(self, raw_path: str) -> str:
+        text = raw_path.replace("\\", "/")
+        marker = "/workspace/"
+        if marker in text:
+            text = text.split(marker, 1)[1]
+        for marker in ("/source_snapshot/", "/summaries/", "/reference_iterations/", "/generated/"):
+            if marker in text:
+                return marker.strip("/") + "/" + text.split(marker, 1)[1].lstrip("/")
+        return text.lstrip("./")
+
+    def _changed_paths_from_diff(self, diff_path: Path) -> list[str]:
+        if not diff_path.exists():
+            return []
+        out: list[str] = []
+        for line in diff_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.startswith("diff --git "):
+                continue
+            parts = line.split()
+            if len(parts) >= 4:
+                out.append(parts[3].removeprefix("b/"))
+        return sorted(set(out))
+
+    def _load_json_file(self, path: Path) -> Any:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _latest_proposer_tool_access(self, iteration: int) -> dict[str, Any]:
+        if not self.summary_path.exists():
+            return {}
+        for raw in reversed(self.summary_path.read_text(encoding="utf-8").splitlines()):
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(item, dict)
+                and item.get("event") == "proposer_result"
+                and int(item.get("iteration") or 0) == iteration
+            ):
+                return {
+                    "files_read": item.get("files_read", {}),
+                    "files_written": item.get("files_written", {}),
+                }
+        return {}
+
+    def _bandit_last_improvement_iteration(
+        self,
+        candidates: list[CandidateResult],
+    ) -> int | None:
+        best = 0.0
+        last: int | None = None
+        for candidate in sorted(
+            candidates,
+            key=lambda item: ((_candidate_iteration(item.candidate_id) or 0), item.candidate_id),
+        ):
+            iteration = _candidate_iteration(candidate.candidate_id) or 0
+            if iteration <= 0:
+                continue
+            if candidate.passrate > best:
+                best = candidate.passrate
+                last = iteration
+        return last
+
+    _BANDIT_REF_ITER_RE = re.compile(r"reference_iterations/iter_(\d+)/")
+
+    def _iters_from_policy_paths(self, paths: list[str]) -> list[int]:
+        seen: set[int] = set()
+        out: list[int] = []
+        for path in paths:
+            match = self._BANDIT_REF_ITER_RE.search(str(path))
+            if not match:
+                continue
+            n = int(match.group(1))
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+        return out
+
     def _reference_iterations_for_budget(
         self,
         budget: str,
@@ -1651,6 +2211,7 @@ class LocomoOptimizer:
             "mem0_source_path",
             "memgpt_source_path",
             "membank_source_path",
+            "mini_swe_agent_source_path",
             "source_base_dir",
             "base_memory_dir",
         ):
@@ -1703,6 +2264,7 @@ class LocomoOptimizer:
             "mem0_source_path",
             "memgpt_source_path",
             "membank_source_path",
+            "mini_swe_agent_source_path",
         ):
             value = payload.get(key)
             if not isinstance(value, str) or not value.strip():
@@ -2032,6 +2594,17 @@ def _single_top_k(raw: Any) -> tuple[int, bool]:
     if isinstance(raw, list) and raw:
         return int(raw[0]), len(raw) != 1
     return int(raw or 8), raw != 8
+
+
+def _dedupe_list(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value).strip()
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 def _dedupe_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
