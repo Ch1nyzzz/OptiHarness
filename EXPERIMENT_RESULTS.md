@@ -25,9 +25,11 @@ codex54). Only the v3 results are retained below.
   better than progressive in the claudekimi offline validation run.
 - SWE-bench mini: progressive on the mimo v2.5 trainfirst30 pool reaches
   **0.5333** vs a source baseline of 0.4000–0.4667 (run-to-run variance on
-  the 30-task pool). Earlier verified_test10 runs (qwen35-9b, qwen35 a3b)
-  still show no improvement over the source baseline. No mimo-v2.5 bandit
-  train30 result.
+  the 30-task pool). DeepSeek v4 Flash bandit (fixedsource) on the same
+  trainfirst30 pool also reaches **0.5333** vs a source baseline of
+  0.5000. Earlier verified_test10 runs (qwen35-9b, qwen35 a3b) still show
+  no improvement over the source baseline. No mimo-v2.5 bandit train30
+  result.
 
 ## Reading the merged tables
 
@@ -233,6 +235,41 @@ Notes:
   more files before producing a patch. Cache reads scale up correspondingly
   (~3M tok/iter vs ~1.7M on LoCoMo).
 
+### train30 (DeepSeek v4 Flash, 30 train instances)
+
+The same trainfirst30 pool was also run with DeepSeek v4 Flash as the
+solver. Only a bandit policy was attempted; default/progressive were not
+run. The fixedsource bandit row uses the canonical sliding-window
+passrate-only z-score reward (window=16). 20 proposer iter dirs exist
+but `iter_020` is missing its `metrics.json` (interrupted), so cost
+averages over the first 19.
+
+| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | bandit (fixedsource) | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 56.6 | 25.5 | 12.2m |
+
+Notes:
+
+- Best optimizer candidates: `iter005_auto_test_feedback_and_recovery` plus
+  four ties at 0.5333 (`iter006_repro_and_review`,
+  `iter007_pre_edit_localization`,
+  `iter009_edit_verification_repo_tests`,
+  `iter013_impact_aware_feedback`).
+- The DeepSeek bandit reaches the same 0.5333 ceiling as the mimo v2.5
+  progressive run, but with a different solver and a higher source
+  baseline (0.5000 vs 0.4667 on mimo). None of these bandit candidates
+  was promoted to the full500 verified evaluation; the candidate evaluated
+  there came from the mimo progressive run.
+- An earlier "promptcells" variant
+  (`swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_iter20_trainfirst30_w10_t900_promptcells_20260430_200058`)
+  only completed 6 iterations and never beat the source baseline (best
+  0.5000 = baseline). Its averaged cost (104.2k input / 29.4k output /
+  2.53M cache reads / 54.5 tools / 27.8 files / 10.8m per iter, n=6) is
+  not retained as a result row.
+- Cache reads (3.35M/iter) are the largest of any benchmark/policy combo
+  so far — DeepSeek v4 Flash with mini-SWE-agent context plus the bandit
+  policy meta produces an unusually wide cached prompt.
+
 ### verified_full500 (DeepSeek v4 Flash)
 
 These are full SWE-bench Verified test evaluations with DeepSeek v4 Flash
@@ -287,9 +324,10 @@ Notes:
   (0.4580).
 - The verified_test10 optimizer pool is too small and too saturated for the
   optimizer to reliably improve over the source baseline.
-- DeepSeek v4 Flash bandit train30 searches have been run; the strongest
-  full verified result currently comes from the progressive optimized
-  candidate evaluated in the full500 run above.
+- DeepSeek v4 Flash bandit (fixedsource) train30 reaches the same 0.5333
+  ceiling as mimo progressive on the trainfirst30 pool, but its candidate
+  was not promoted to verified_full500; the strongest full verified result
+  still comes from the mimo progressive optimized candidate.
 
 Key run paths:
 

@@ -312,19 +312,23 @@ test-frontier run aborted on a Together 500 and is not counted.
 ### 5.3 SWE-bench mini
 
 The source-code backend (`mini_swe_agent_source`) is wired into the
-optimize CLI (`--swebench`). The current run with a meaningful signal is
-mimo v2.5 trainfirst30; the SWE-bench train30 pool has no separate test
-split, so passrate is reported on the same 30-task pool against the source
-baseline.
+optimize CLI (`--swebench`). Two solver models have been run on the same
+trainfirst30 pool: mimo v2.5 (default + progressive) and DeepSeek v4 Flash
+(bandit only). The SWE-bench train30 pool has no separate test split, so
+passrate is reported on the same 30-task pool against each solver's
+source baseline.
 
-| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 56.0 | 23.2 | 13.4m |
-| claudekimi | progressive | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 61.0 | 23.6 | 12.5m |
+| proposer | policy | solver | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | mimo v2.5 | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 56.0 | 23.2 | 13.4m |
+| claudekimi | progressive | mimo v2.5 | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 61.0 | 23.6 | 12.5m |
+| claudekimi | bandit (fixedsource) | DeepSeek v4 Flash | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 56.6 | 25.5 | 12.2m |
 
-The more important signal is the full DeepSeek v4 Flash evaluation on the
-500-problem verified set (this is a candidate-level eval, not a
-(proposer, policy) optimization row):
+DeepSeek bandit reaches the same 0.5333 ceiling as mimo progressive on the
+same pool; its candidate was not promoted to verified_full500. The more
+important signal is the full DeepSeek v4 Flash evaluation on the 500-problem
+verified set (a candidate-level eval, not a (proposer, policy)
+optimization row):
 
 | candidate                                                               | resolved/500 | passrate    |
 |-------------------------------------------------------------------------|-------------:|------------:|
