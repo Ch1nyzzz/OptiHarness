@@ -254,19 +254,34 @@ cannot demote essential files into warm/cold.
 
 ## 5. Experimental results summary
 
-Detailed numbers, per-iteration costs, and all run paths are in
-[`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md). This section lists only
-the conclusions.
+Each benchmark below uses a single per-(proposer, policy) table that pairs
+passrate (train + test) with per-iteration proposer cost. `input` and
+`output` are new tokens billed each turn; `cache reads` is the prompt-cache
+hit reused across turns; `tools/iter` is tool-use calls per iteration;
+`files/iter` is unique workspace files opened per iteration. A `—` cell
+means cost data is unavailable (the train-run dir was deleted, only the
+test-eval dir remains). Bold cells flag the strongest result within each
+proposer family; ★ marks the overall benchmark best. See
+[`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md) for run paths and
+extended notes.
 
 ### 5.1 LoCoMo (train=80, test=1449)
 
-**Test passrate** (bold = best within that proposer family):
-
-| proposer family | default | progressive (docker) | bandit (docker) | bandit v2 (docker) | bandit v3 (docker) | best          |
-|-----------------|--------:|---------------------:|----------------:|-------------------:|-------------------:|---------------|
-| claudekimi      | 0.3409  | **0.3734**           | 0.3616          | 0.3395             | 0.3589             | progressive   |
-| claude opus     | 0.3306  | **0.3982**           | 0.3230          | N/A                | N/A                | progressive ★ |
-| codex54         | 0.3471  | 0.3589               | 0.3140          | 0.3575             | **0.3865**         | bandit v3     |
+| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — |
+| claudekimi | progressive (docker) | 0.4375 | **0.3734** | 138.9k | 25.5k | 1.70M | 35.2 | 15.1 | 13.0m |
+| claudekimi | bandit (docker) | 0.4125 | 0.3616 | — | — | — | — | — | — |
+| claudekimi | bandit v2 (docker) | **0.4500** | 0.3395 | — | — | — | — | — | — |
+| claudekimi | bandit v3 (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 35.1 | 17.6 | 14.1m |
+| claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — |
+| claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 61.2 | 20.7 | 8.9m |
+| claude opus | bandit (docker) | 0.4125 | 0.3230 | — | — | — | — | — | — |
+| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — |
+| codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 50.6 | 16.9 | 7.1m |
+| codex54 | bandit (docker) | 0.3750 | 0.3140 | — | — | — | — | — | — |
+| codex54 | bandit v2 (docker) | **0.4625** | 0.3575 | — | — | — | — | — | — |
+| codex54 | bandit v3 (docker) | 0.4250 | **0.3865** | 1.13M | 20.7k | 995k | 34.6 | 18.5 | 7.0m |
 
 Highlights:
 
@@ -279,11 +294,18 @@ Highlights:
 
 ### 5.2 LongMemEval (train=100, test=400)
 
-| proposer family | default     | progressive          | bandit  | best        |
-|-----------------|------------:|---------------------:|--------:|-------------|
-| claude opus46   | N/A         | failed: Together 500  | N/A     | —           |
-| claudekimi      | 0.4700      | **0.5000**            | 0.4400  | progressive |
-| codex54         | **0.4875**  | 0.4725                | 0.4575  | default     |
+No bandit v3 run was attempted on LongMemEval; the bandit row is bandit v2.
+opus46 default and bandit are not reported (no completed runs).
+
+| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 61.3 | 20.0 | 7.2m |
+| claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 39.6 | 18.4 | 10.3m |
+| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 33.6 | 16.3 | 9.5m |
+| claudekimi | bandit v2 | 0.5700 | 0.4400 | — | — | — | — | — | — |
+| codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 33.4 | 18.8 | 9.5m |
+| codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 31.9 | 17.0 | 8.3m |
+| codex54 | bandit v2 | 0.5700 | 0.4575 | — | — | — | — | — | — |
 
 Takeaway: bandit v2 no longer leads on LongMemEval test —
 progressive/default come out ahead. opus46 has the strongest train number
@@ -294,15 +316,18 @@ counted.
 
 The source-code backend (`mini_swe_agent_source`) is wired into the
 optimize CLI (`--swebench`). The current run with a meaningful signal is
-mimo v2.5 trainfirst30:
+mimo v2.5 trainfirst30; the SWE-bench train30 pool has no separate test
+split, so passrate is reported on the same 30-task pool against the source
+baseline.
 
-| policy                 | source baseline | best optimizer candidate                            | best passrate | iters     |
-|------------------------|----------------:|-----------------------------------------------------|--------------:|----------:|
-| claudekimi default     | 0.4667          | iter002 `stack_trace_context` and 4 ties            | **0.5000**    | 20/30     |
-| claudekimi progressive | 0.4000          | `iter016_final_fallback_traceback_retrieval_v1`     | **0.5333**    | 20/30     |
+| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 56.0 | 23.2 | 13.4m |
+| claudekimi | progressive | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 61.0 | 23.6 | 12.5m |
 
 The more important signal is the full DeepSeek v4 Flash evaluation on the
-500-problem verified set:
+500-problem verified set (this is a candidate-level eval, not a
+(proposer, policy) optimization row):
 
 | candidate                                                               | resolved/500 | passrate    |
 |-------------------------------------------------------------------------|-------------:|------------:|
