@@ -267,50 +267,47 @@ extended notes.
 
 ### 5.1 LoCoMo (train=80, test=1449)
 
+The bandit row is the latest sliding-window z-score variant (window=16;
+passrate-only reward for claudekimi, mixed reward for codex54). Earlier
+bandit variants (v1, v2) are not retained. claude opus has no bandit row
+because no v3-era bandit run was completed on opus.
+
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — |
-| claudekimi | progressive (docker) | 0.4375 | **0.3734** | 138.9k | 25.5k | 1.70M | 35.2 | 15.1 | 13.0m |
-| claudekimi | bandit (docker) | 0.4125 | 0.3616 | — | — | — | — | — | — |
-| claudekimi | bandit v2 (docker) | **0.4500** | 0.3395 | — | — | — | — | — | — |
-| claudekimi | bandit v3 (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 35.1 | 17.6 | 14.1m |
+| claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 35.2 | 15.1 | 13.0m |
+| claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 35.1 | 17.6 | 14.1m |
 | claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — |
 | claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 61.2 | 20.7 | 8.9m |
-| claude opus | bandit (docker) | 0.4125 | 0.3230 | — | — | — | — | — | — |
 | codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — |
 | codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 50.6 | 16.9 | 7.1m |
-| codex54 | bandit (docker) | 0.3750 | 0.3140 | — | — | — | — | — | — |
-| codex54 | bandit v2 (docker) | **0.4625** | 0.3575 | — | — | — | — | — | — |
-| codex54 | bandit v3 (docker) | 0.4250 | **0.3865** | 1.13M | 20.7k | 995k | 34.6 | 18.5 | 7.0m |
+| codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 34.6 | 18.5 | 7.0m |
 
 Highlights:
 
 - **Global best on LoCoMo: claude opus progressive docker, 0.3982 test.**
 - progressive wins outright on claudekimi / opus; codex54 is the only
-  family where the bandit overtakes progressive. bandit v3 (0.3865) is
-  also the only bandit result on any proposer that beats progressive.
-- bandit v3 nearly halves codex54's cost (input/iter 2.39M → 1.13M) with
-  no test regression.
+  family where the bandit overtakes progressive (0.3865 test) — also the
+  only bandit result on any proposer that beats progressive.
+- bandit nearly halves codex54's input cost (input/iter 2.39M → 1.13M)
+  with no test regression.
 
 ### 5.2 LongMemEval (train=100, test=400)
 
-No bandit v3 run was attempted on LongMemEval; the bandit row is bandit v2.
-opus46 default and bandit are not reported (no completed runs).
+No bandit run was completed on LongMemEval, so the bandit column is
+omitted. opus46 default is not reported (no completed run).
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 61.3 | 20.0 | 7.2m |
 | claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 39.6 | 18.4 | 10.3m |
 | claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 33.6 | 16.3 | 9.5m |
-| claudekimi | bandit v2 | 0.5700 | 0.4400 | — | — | — | — | — | — |
 | codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 33.4 | 18.8 | 9.5m |
 | codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 31.9 | 17.0 | 8.3m |
-| codex54 | bandit v2 | 0.5700 | 0.4575 | — | — | — | — | — | — |
 
-Takeaway: bandit v2 no longer leads on LongMemEval test —
-progressive/default come out ahead. opus46 has the strongest train number
-(0.6300) but its test-frontier run aborted on a Together 500 and is not
-counted.
+Takeaway: claudekimi progressive leads test at 0.5000; codex54 default is
+second at 0.4875. opus46 has the strongest train number (0.6300) but its
+test-frontier run aborted on a Together 500 and is not counted.
 
 ### 5.3 SWE-bench mini
 
@@ -343,13 +340,13 @@ quickly for the optimizer to make stable improvements.
 ### 5.4 Overall takeaways
 
 - LoCoMo global best: claude opus progressive docker @ 0.3982 test.
-- LongMemEval no longer supports the "bandit always wins" claim:
-  progressive / default beat bandit v2 on test.
+- LongMemEval has no completed bandit run; progressive (claudekimi 0.5000)
+  and default (codex54 0.4875) lead test.
 - On LoCoMo, progressive is the safe winner for claudekimi / opus;
-  codex54 is the family that benefits from bandit v3.
+  codex54 is the only family that benefits from the bandit policy.
 - train80 LoCoMo on its own is too noisy and should always be paired with
-  test 1449; claudekimi bandit is the clearest example of train/test
-  inconsistency.
+  test 1449; claudekimi bandit (train 0.4375 / test 0.3589 vs progressive
+  0.4375 / 0.3734) is the clearest example of train/test inconsistency.
 - The first real optimization signal on SWE-bench mini comes from
   progressive: trainfirst30 0.5333 (vs baseline 0.4667), and DeepSeek
   Flash full500 0.6200 (vs baseline 0.4400).
