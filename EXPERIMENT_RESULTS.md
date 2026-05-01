@@ -253,6 +253,8 @@ Three task pools have been used so far:
 - **train30 (mimo v2.5)** — 30 SWE-bench-verified train instances, 10 workers,
   900s per-task timeout. The first sequence where optimization beats the
   source baseline.
+- **verified_full500 (DeepSeek v4 Flash)** — full 500-task SWE-bench Verified
+  evaluation for the source baseline and optimized mini-SWE-agent candidates.
 - **verified_test10 (qwen35-9b)** — 10 verified-test instances. Source
   baseline 0.30 (default) / 0.20 (progressive); optimizer iterations regress.
 - **verified_test10 (qwen35 a3b 35B-A3B)** — older 2026-04-24 sequence;
@@ -299,6 +301,22 @@ because the SWE-bench workspace is larger (full mini-SWE-agent source plus
 benchmark scaffolding); each iteration probes more files before producing a
 patch. Cache reads scale up correspondingly (~3M tok/iter vs ~1.7M on LoCoMo).
 
+### verified_full500 (DeepSeek v4 Flash)
+
+These are full SWE-bench Verified test evaluations with DeepSeek v4 Flash as the
+solver model. The optimized candidates come from the mini-SWE-agent source
+optimization runs; score is `resolved / 500`.
+
+| candidate | source run | resolved / total | passrate |
+|---|---|---:|---:|
+| source baseline | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 220 / 500 | 0.4400 |
+| default optimized (`iter002_stack_trace_context`) | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 229 / 500 | 0.4580 |
+| progressive optimized (`iter016_final_fallback_traceback_retrieval_v1`) | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 310 / 500 | **0.6200** |
+
+The progressive optimized candidate is the clear best verified result so far:
++18.0 absolute points over the DeepSeek v4 Flash source baseline and +16.2
+points over the default optimized candidate.
+
 ### verified_test10 (qwen35-9b, fixedpaths)
 
 | policy | source baseline | best optimizer candidate | best passrate |
@@ -321,8 +339,8 @@ Notes:
   DeepSeek v4 Flash agent: 1 task, passrate 1.0, used to validate the
   command-template wiring.
 - `swebench_deepseek_v4_flash_verified_full500_20260430_182537` — full
-  500-task verified baseline, in progress (118/500 task dirs at the time of
-  this update).
+  500-task verified evaluation for DeepSeek v4 Flash baseline and optimized
+  candidates.
 
 ### Conclusion
 
@@ -330,9 +348,14 @@ Notes:
   end-to-end and produces useful proposer iterations on train30.
 - mimo v2.5 trainfirst30 progressive (rerun) is the first SWE-bench result
   that meaningfully beats the source baseline (0.5333 vs 0.4667 absolute).
-- The verified_test10 pool is too small and too saturated for the optimizer
-  to reliably improve over the source baseline.
-- No bandit selection policy run has been attempted on SWE-bench yet.
+- On full SWE-bench Verified with DeepSeek v4 Flash, the progressive optimized
+  candidate reaches 310/500 resolved (0.6200), beating the source baseline
+  220/500 (0.4400) and default optimized candidate 229/500 (0.4580).
+- The verified_test10 optimizer pool is too small and too saturated for the
+  optimizer to reliably improve over the source baseline.
+- DeepSeek v4 Flash bandit-v3 train30 searches have been run; the strongest
+  full verified result currently comes from the progressive optimized candidate
+  evaluated in the full500 run above.
 
 Key run paths:
 
@@ -341,7 +364,9 @@ Key run paths:
 - `runs/swebench_miniswe_qwen35_9b_claudekimi_default_fixedpaths_iter30_verified_test10_20260429_174251`
 - `runs/swebench_miniswe_qwen35_9b_claudekimi_progressive_fixedpaths_iter30_verified_test10_20260429_174251`
 - `runs/swebench_deepseek_v4_flash_smoke_baseline_1`
-- `runs/swebench_deepseek_v4_flash_verified_full500_20260430_182537` (in progress)
+- `runs/swebench_deepseek_v4_flash_verified_full500_20260430_182537`
+- `runs/swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_fixedsource_iter20_trainfirst30_w10_t900_20260430_233750`
+- `runs/swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_iter20_trainfirst30_w10_t900_promptcells_20260430_200058`
 - `runs/swebench_miniswe_qwen35_claudekimi_default_iter30_verified_test10_20260424_2038` (older a3b baseline)
 - `runs/swebench_miniswe_qwen35_claudekimi_progressive_iter30_verified_test10_20260424_2038` (older a3b baseline)
 
@@ -365,4 +390,6 @@ Key run paths:
   this doc keeps only the higher-scoring result.
 - SWE-bench mini has its first useful optimization signal: mimo v2.5
   trainfirst30 progressive reaches 0.5333 train vs 0.4667 source baseline.
-  verified_test10 remains too small to drive improvement.
+  DeepSeek v4 Flash full verified evaluation reaches 0.6200 after progressive
+  optimization vs 0.4400 source baseline; verified_test10 remains too small to
+  drive optimizer improvement.
