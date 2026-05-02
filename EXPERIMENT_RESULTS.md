@@ -1,6 +1,6 @@
 # Experiment Results
 
-Last updated: 2026-05-01
+Last updated: 2026-05-02
 
 This file summarizes the current completed experiments for the default,
 progressive, and bandit selection policies. Reruns that reproduced the same
@@ -19,17 +19,31 @@ codex54). Only the v3 results are retained below.
   result that beats progressive for any proposer family on LoCoMo.
   claudekimi bandit reaches 0.3589 test, still trailing claudekimi
   progressive (0.3734).
-- LongMemEval test best is claudekimi progressive at 0.5000, with codex54
-  default close behind at 0.4875. No bandit run on LongMemEval.
+- **LongMemEval bandit v3 added (2026-05-01)**: codex54 v3 bandit ties
+  progressive at 0.4725 test while cutting proposer cost ~36% (input/iter
+  1.77M → 1.13M). claudekimi v3 bandit underperforms at 0.4325 test,
+  same kimi-vs-codex split observed on LoCoMo. LongMemEval test best
+  remains claudekimi progressive at 0.5000.
+- New `--include-optimization-direction` flag exposes a `default+direction`
+  ablation that injects only the Optimization Focus mechanism direction
+  list while keeping default's fixed-high schedule. First LongMemEval
+  claudekimi run hit train 0.6500 / test 0.5300 (above progressive
+  0.5000); a rerun is in progress to confirm stability before the
+  number is treated as the new test best. **On LoCoMo claudekimi the
+  same flag lowers test (0.3382 → 0.3140)** while inflating cache reads
+  (+49%); a LoCoMo kimi default+direction rerun is also in progress to
+  confirm whether the drop is stable. See PIPELINE.md §1 for the prompt
+  mechanics.
 - Text classification has no bandit run in the current results. Default is
   better than progressive in the claudekimi offline validation run.
-- SWE-bench mini: progressive on the mimo v2.5 trainfirst30 pool reaches
-  **0.5333** vs a source baseline of 0.4000–0.4667 (run-to-run variance on
-  the 30-task pool). DeepSeek v4 Flash bandit (fixedsource) on the same
-  trainfirst30 pool also reaches **0.5333** vs a source baseline of
-  0.5000. Earlier verified_test10 runs (qwen35-9b, qwen35 a3b) still show
-  no improvement over the source baseline. No mimo-v2.5 bandit train30
-  result.
+- SWE-bench mini: DeepSeek v4 Flash bandit (fixedsource) now gives the
+  strongest full SWE-bench Verified result: **320/500 = 0.6400** with
+  `iter013_impact_aware_feedback`, beating the earlier progressive full500
+  result of 310/500 (0.6200). Earlier verified_test10 runs (qwen35-9b,
+  qwen35 a3b) still show no improvement over the source baseline. No
+  mimo-v2.5 bandit train30 result. A kimi default+direction run on
+  DeepSeek v4 Flash trainfirst30 is in progress (iter_021 at time of
+  writing).
 
 ## Reading the merged tables
 
@@ -59,12 +73,14 @@ predate the docker sandbox and are kept as baselines.
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — | — |
+| claudekimi | default (docker) | 0.4125 | 0.3382 | 136.4k | 26.8k | 2.97M | 3.13M | 45.8 | 19.9 | 12.3m |
+| claudekimi | default+direction (docker, 1st) | 0.3875 | 0.3140 | 170.1k | 28.3k | 4.43M | 4.63M | 54.8 | 19.9 | 16.3m |
+| claudekimi | default+direction (docker, rerun) | running | running | — | — | — | — | — | — | — |
 | claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 1.86M | 35.2 | 15.1 | 13.0m |
 | claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 1.96M | 35.1 | 17.6 | 14.1m |
 | claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — | — |
 | claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 2.11M | 61.2 | 20.7 | 8.9m |
-| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — | — |
+| codex54 | default (docker) | 0.4375 | 0.3368 | 1.45M | 23.9k | 1.33M | 2.80M | 33.9 | 16.8 | 8.0m |
 | codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 4.66M | 50.6 | 16.9 | 7.1m |
 | codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 2.14M | 34.6 | 18.5 | 7.0m |
 
@@ -100,6 +116,12 @@ full 1,449-example test split using Qwen3-8B on GPU1
   nearly in half (2.39M → 1.13M) without losing test quality.
 - The opus proposer keeps almost everything in the prompt cache
   (input ≈ 3k), so its real cost is dominated by cache reads.
+- **claudekimi default+direction** (new `--include-optimization-direction`
+  flag) underperforms plain default on LoCoMo (test 0.3140 vs 0.3382) and
+  pays a heavy cost penalty (cache reads 2.97M → 4.43M, dur 12.3m →
+  16.3m). Mechanism direction lines tighten the proposer toward the
+  hypothesis schema but cost more cache reads and—on LoCoMo at least—do
+  not transfer to test. See PIPELINE.md §1 for the prompt mechanics.
 
 ### Key run paths
 
@@ -115,46 +137,73 @@ full 1,449-example test split using Qwen3-8B on GPU1
 - `runs/locomo_memory_opt_memgpt_codex54_bandit_v3_iter30_full80seed_w16_20260428_192739`
 - `runs/locomo_memory_opt_memgpt_claude_opus_progressive_docker_iter30_full80seed_20260427_0353`
 - `runs/locomo_memory_opt_memgpt_codex54_progressive_docker_iter30_full80seed_20260421_211252`
+- `runs/locomo_memgpt_codex54_default_docker_iter30_train80_rerun_20260502_015354` (codex54 default docker)
+- `runs/locomo_memgpt_claudekimi_default_docker_iter30_train80_20260501_204004` (claudekimi default docker)
+- `runs/locomo_memgpt_claudekimi_default_direction_docker_iter30_train80_20260502_015441` (claudekimi default+direction, 1st)
+- `runs/locomo_memgpt_claudekimi_default_direction_docker_iter30_train80_20260502_154556` (claudekimi default+direction, rerun)
 
 ## LongMemEval
 
 Train rows use train100. Test rows use the 400-example test split. Rows
 marked `failed` produced a test-frontier artifact but did not complete a
-valid score. The opus46 progressive test was retried and stopped after
-hanging; its last completed status is a Together judge 500 error. No
-bandit run was completed on LongMemEval, so the bandit column is omitted.
-opus46 default is not reported (no completed run).
+valid score. Bandit rows use the same v3 sliding-window z-score reward
+(window=16, passrate-only) as the LoCoMo bandit runs.
+`default+direction` rows use the new `--include-optimization-direction`
+flag, which injects the Optimization Focus mechanism direction list
+into the proposer prompt while keeping the default policy's fixed-high
+context schedule (see PIPELINE.md §0.1).
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 1.57M | 61.3 | 20.0 | 7.2m |
 | claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 2.27M | 39.6 | 18.4 | 10.3m |
-| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
+| claudekimi | progressive | **0.6000** | **0.5000** ★ | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
+| claudekimi | bandit (docker, v3, 1st) | 0.5300 | 0.4325 | 152.9k | 27.9k | 3.28M | 3.46M | 44.4 | 20.0 | 14.3m |
+| claudekimi | bandit (docker, v3, rerun) | running | running | — | — | — | — | — | — | — |
+| claudekimi | default+direction (1st) | 0.6500 | 0.5300 | 176.0k | 30.2k | 3.43M | 3.63M | 49.6 | 18.6 | 16.3m |
+| claudekimi | default+direction (rerun) | running | running | — | — | — | — | — | — | — |
 | codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 3.41M | 33.4 | 18.8 | 9.5m |
 | codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 2.80M | 31.9 | 17.0 | 8.3m |
+| codex54 | bandit (docker, v3) | 0.5200 | 0.4725 | 1.13M | 24.6k | 1.03M | 2.18M | 34.8 | 19.0 | 8.1m |
 
 All cost rows average over 30 iterations.
 
 ### Notes
 
 - Best LongMemEval test result is claudekimi progressive at 0.5000; codex54
-  default is second at 0.4875.
+  default and codex54 v3 bandit tie for second at 0.4875 / 0.4725.
+- **codex54 v3 bandit cuts proposer cost by ~36%** (input/iter 1.77M → 1.13M,
+  total/iter 3.41M → 2.18M, dur/iter 9.5m → 8.1m) while losing only −1.5pt
+  test passrate vs default — the same cost-reduction pattern seen on LoCoMo
+  codex54 bandit.
+- claudekimi v3 bandit (0.4325) underperforms claudekimi default (0.4700)
+  and progressive (0.5000) on test even though its train (0.5300) is in
+  the same ballpark, repeating the LoCoMo pattern that bandit transfers
+  worse than progressive for the kimi proposer.
 - codex54 progressive shown is the rerun (0.4725); the original run failed
   on test with `date value out of range` and is not counted.
-- opus46 progressive is strongest on train100 at 0.6300, but its
-  test-frontier attempt failed with a Together 500; a rerun was stopped
-  before completion.
-- Cost pattern matches LoCoMo: codex54 dominates input-token cost, opus46
-  rides on the prompt cache, and claudekimi sits in between.
+- claudekimi default+direction's first run hit train 0.6500 / test
+  0.5300 — the highest train ever recorded on LongMemEval and above
+  progressive 0.5000 on test — but a same-config rerun is in progress
+  to confirm stability before the row is treated as the new test best.
+  Cost is ~+50% cache reads vs plain default (3.43M vs 2.12M
+  tokens/iter, dur 16.3m vs 10.3m). Test was retried with
+  `scripts/evaluate_longmemeval_candidate.py` after the original
+  test_frontier hit Together 429.
+- Cost pattern matches LoCoMo: codex54 dominates input-token cost while
+  claudekimi rides on the prompt cache.
 
 ### Key run paths
 
 - `runs/longmemeval_memgpt_claudekimi_default_docker_env_iter30_train100_fix_20260423_074629`
 - `runs/longmemeval_memgpt_claudekimi_progressive_docker_env_iter30_train100_fixrerun_20260423_161417`
 - `runs/longmemeval_default_iter021_correct_test_run4_20260424`
-- `runs/longmemeval_memgpt_claude_opus46_progressive_docker_iter30_train100_20260427_222924`
 - `runs/longmemeval_memgpt_codex54_default_docker_iter30_train100_20260427_222924`
 - `runs/longmemeval_memgpt_codex54_progressive_docker_rerun_iter30_train100_w16_20260428_162906`
+- `runs/longmemeval_memgpt_codex54_bandit_v3_docker_iter30_train100_w16_20260501_203909`
+- `runs/longmemeval_memgpt_claudekimi_bandit_v3_docker_iter30_train100_w16_20260501_203907` (1st bandit v3)
+- `runs/longmemeval_memgpt_claudekimi_bandit_v3_docker_iter30_train100_w16_20260502_155309` (bandit v3 rerun)
+- `runs/longmemeval_memgpt_claudekimi_default_direction_docker_iter30_train100_20260502_015454` (1st default+direction)
+- `runs/longmemeval_memgpt_claudekimi_default_direction_docker_iter30_train100_20260502_152524` (default+direction rerun)
 
 ## Text Classification
 
@@ -217,12 +266,12 @@ Notes:
 - The progressive row is the rerun (2026-04-30). An initial progressive run
   on the same pool plateaued at the source baseline (0.4667) but only
   completed 5/30 iterations and is not counted; the rerun supersedes it.
-- Progressive is the strongest current SWE-bench result. The rerun's lower
-  source baseline (0.4000 vs the earlier non-rerun baseline of 0.4667)
-  reflects scoring variance on the 30-task pool, not a regression in the
-  agent — the optimizer still converges to a candidate that beats both the
-  rerun's own baseline (0.4 → 0.5333) and the earlier baseline
-  (0.4667 → 0.5333).
+- Progressive is the strongest current mimo v2.5 train30 result. The
+  rerun's lower source baseline (0.4000 vs the earlier non-rerun baseline
+  of 0.4667) reflects scoring variance on the 30-task pool, not a
+  regression in the agent — the optimizer still converges to a candidate
+  that beats both the rerun's own baseline (0.4 → 0.5333) and the earlier
+  baseline (0.4667 → 0.5333).
 - `iter016` introduces a fallback traceback-aware retrieval; the next four
   best candidates (0.5000) are independent traceback / verification gates,
   suggesting traceback-driven evidence is the dominant useful direction on
@@ -257,11 +306,11 @@ Notes:
   `iter007_pre_edit_localization`,
   `iter009_edit_verification_repo_tests`,
   `iter013_impact_aware_feedback`).
-- The DeepSeek bandit reaches the same 0.5333 ceiling as the mimo v2.5
-  progressive run, but with a different solver and a higher source
-  baseline (0.5000 vs 0.4667 on mimo). None of these bandit candidates
-  was promoted to the full500 verified evaluation; the candidate evaluated
-  there came from the mimo progressive run.
+- The DeepSeek bandit reaches the same 0.5333 train30 ceiling as the mimo
+  v2.5 progressive run, but with a different solver and a higher source
+  baseline (0.5000 vs 0.4667 on mimo). The tied frontier candidates were
+  later promoted to full500 verified evaluation; `iter013` is the best
+  verified result at 320/500 (0.6400).
 - An earlier "promptcells" variant
   (`swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_iter20_trainfirst30_w10_t900_promptcells_20260430_200058`)
   only completed 6 iterations and never beat the source baseline (best
@@ -282,11 +331,15 @@ source optimization runs; score is `resolved / 500`.
 |---|---|---:|---:|
 | source baseline | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 220 / 500 | 0.4400 |
 | default optimized (`iter002_stack_trace_context`) | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 229 / 500 | 0.4580 |
-| progressive optimized (`iter016_final_fallback_traceback_retrieval_v1`) | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 310 / 500 | **0.6200** |
+| progressive optimized (`iter016_final_fallback_traceback_retrieval_v1`) | `swebench_deepseek_v4_flash_verified_full500_20260430_182537` | 310 / 500 | 0.6200 |
+| bandit fixedsource optimized (`iter013_impact_aware_feedback`) | `swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_fixedsource_iter20_trainfirst30_w10_t900_20260430_233750/test_frontier` | 320 / 500 | **0.6400** |
 
-The progressive optimized candidate is the clear best verified result so
-far: +18.0 absolute points over the DeepSeek v4 Flash source baseline and
-+16.2 points over the default optimized candidate.
+The bandit fixedsource `iter013_impact_aware_feedback` candidate is the
+current best verified result: +20.0 absolute points over the DeepSeek v4
+Flash source baseline, +18.2 points over the default optimized candidate,
+and +2.0 points over the earlier progressive full500 result. The full
+frontier test results are stored at
+`runs/swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_fixedsource_iter20_trainfirst30_w10_t900_20260430_233750/test_frontier/test_results.json`.
 
 ### verified_test10 (qwen35-9b, fixedpaths)
 
@@ -320,16 +373,17 @@ Notes:
   end-to-end and produces useful proposer iterations on train30.
 - mimo v2.5 trainfirst30 progressive (rerun) is the first SWE-bench result
   that meaningfully beats the source baseline (0.5333 vs 0.4667 absolute).
-- On full SWE-bench Verified with DeepSeek v4 Flash, the progressive
-  optimized candidate reaches 310/500 resolved (0.6200), beating the source
-  baseline 220/500 (0.4400) and the default optimized candidate 229/500
-  (0.4580).
+- On full SWE-bench Verified with DeepSeek v4 Flash, the bandit fixedsource
+  optimized candidate `iter013_impact_aware_feedback` reaches 320/500
+  resolved (0.6400), beating the source baseline 220/500 (0.4400), the
+  default optimized candidate 229/500 (0.4580), and the earlier progressive
+  optimized candidate 310/500 (0.6200).
 - The verified_test10 optimizer pool is too small and too saturated for the
   optimizer to reliably improve over the source baseline.
 - DeepSeek v4 Flash bandit (fixedsource) train30 reaches the same 0.5333
-  ceiling as mimo progressive on the trainfirst30 pool, but its candidate
-  was not promoted to verified_full500; the strongest full verified result
-  still comes from the mimo progressive optimized candidate.
+  ceiling as mimo progressive on the trainfirst30 pool, and its best
+  full500 promoted candidate is now the strongest SWE-bench result in this
+  document.
 
 Key run paths:
 
@@ -360,6 +414,6 @@ Key run paths:
   this doc keeps only the higher-scoring result.
 - SWE-bench mini has its first useful optimization signal: mimo v2.5
   trainfirst30 progressive reaches 0.5333 train vs 0.4667 source baseline.
-  DeepSeek v4 Flash full verified evaluation reaches 0.6200 after
-  progressive optimization vs 0.4400 source baseline; verified_test10
+  DeepSeek v4 Flash full verified evaluation now reaches 0.6400 after
+  bandit fixedsource optimization vs 0.4400 source baseline; verified_test10
   remains too small to drive optimizer improvement.

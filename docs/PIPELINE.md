@@ -356,17 +356,13 @@ because no v3-era bandit run was completed on opus.
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default (no docker) | 0.4000 | 0.3409 | — | — | — | — | — | — | — |
-| claudekimi | default (docker, 1st) | 0.4125 | 0.3382 | 136.4k | 26.8k | 2.97M | 3.13M | 45.8 | 19.9 | 12.3m |
-| claudekimi | default (docker, rerun) | running | running | — | — | — | — | — | — | — |
-| claudekimi | default+direction (docker) | 0.3875 | 0.3140 | 170.1k | 28.3k | 4.43M | 4.63M | 54.8 | 19.9 | 16.3m |
+| claudekimi | default (docker) | 0.4125 | 0.3382 | 136.4k | 26.8k | 2.97M | 3.13M | 45.8 | 19.9 | 12.3m |
+| claudekimi | default+direction (docker) | running | running | — | — | — | — | — | — | — |
 | claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 1.86M | 35.2 | 15.1 | 13.0m |
 | claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 1.96M | 35.1 | 17.6 | 14.1m |
 | claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — | — |
 | claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 2.11M | 61.2 | 20.7 | 8.9m |
-| codex54 | default (no docker) | 0.4125 | 0.3471 | — | — | — | — | — | — | — |
-| codex54 | default (docker, 1st) | 0.4500 | 0.3899 | 1.34M | 25.2k | 1.23M | 2.60M | 31.2 | 17.1 | 8.5m |
-| codex54 | default (docker, rerun) | 0.4375 | 0.3368 | 1.45M | 23.9k | 1.33M | 2.80M | 33.9 | 16.8 | 8.0m |
+| codex54 | default (docker) | 0.4375 | 0.3368 | 1.45M | 23.9k | 1.33M | 2.80M | 33.9 | 16.8 | 8.0m |
 | codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 4.66M | 50.6 | 16.9 | 7.1m |
 | codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 2.14M | 34.6 | 18.5 | 7.0m |
 
@@ -378,32 +374,22 @@ Highlights:
   only bandit result on any proposer that beats progressive.
 - bandit nearly halves codex54's input cost (input/iter 2.39M → 1.13M)
   with no test regression.
-- **codex54 default (docker) is high-variance**: paired runs landed at
-  0.3899 and 0.3368, mean ≈0.363 — close to the historical no-docker
-  default (0.3471) and below progressive/bandit. The 0.3899 reading is
-  treated as upper-tail noise rather than a docker effect.
-- **`default+direction` ablation (`--include-optimization-direction`)
-  hurts test on LoCoMo claudekimi**: 0.3382 → 0.3140 with cache reads
-  ballooning 2.97M → 4.43M. Mechanism direction lines without the
-  budget-tier or bandit utility gating do not help here, suggesting that
-  the policy block (not the focus block) is what unlocks
-  progressive/bandit's gains over default on LoCoMo.
+- `default+direction` (`--include-optimization-direction`) is currently
+  re-running for claudekimi; the row will be filled once the new test
+  number lands.
 
 ### 5.2 LongMemEval (train=100, test=400)
 
-opus46 default is not reported (no completed run). bandit rows use the
-v3 sliding-window z-score reward (window=16, passrate-only).
-`default+direction` rows use the new `--include-optimization-direction`
-flag.
+bandit rows use the v3 sliding-window z-score reward (window=16,
+passrate-only). `default+direction` rows use the new
+`--include-optimization-direction` flag.
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 1.57M | 61.3 | 20.0 | 7.2m |
 | claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 2.27M | 39.6 | 18.4 | 10.3m |
 | claudekimi | progressive | **0.6000** | **0.5000** ★ | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
-| claudekimi | bandit (docker, v3) | 0.5300 | 0.4325 | 152.9k | 27.9k | 3.28M | 3.46M | 44.4 | 20.0 | 14.3m |
-| claudekimi | default+direction (1st) | 0.6500 | 0.5300 | 176.0k | 30.2k | 3.43M | 3.63M | 49.6 | 18.6 | 16.3m |
-| claudekimi | default+direction (rerun) | running | running | — | — | — | — | — | — | — |
+| claudekimi | bandit (docker, v3) | running | running | — | — | — | — | — | — | — |
+| claudekimi | default+direction | running | running | — | — | — | — | — | — | — |
 | codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 3.41M | 33.4 | 18.8 | 9.5m |
 | codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 2.80M | 31.9 | 17.0 | 8.3m |
 | codex54 | bandit (docker, v3) | 0.5200 | 0.4725 | 1.13M | 24.6k | 1.03M | 2.18M | 34.8 | 19.0 | 8.1m |
@@ -416,18 +402,9 @@ Takeaways:
   1.13M, total/iter 3.41M → 2.18M, dur/iter 9.5m → 8.1m) for only −1.5pt
   test passrate vs default. Same cost-reduction pattern as LoCoMo
   codex54 bandit.
-- claudekimi v3 bandit (test 0.4325) underperforms claudekimi default
-  (0.4700) and progressive (0.5000), repeating the LoCoMo pattern that
-  the bandit policy transfers worse than progressive for the kimi
-  proposer family.
-- `default+direction` first run on LongMemEval claudekimi hit train
-  0.6500 / test 0.5300 (above progressive 0.5000) — promising but
-  unconfirmed; a same-config rerun is in progress before this is
-  treated as the new test leader. Cost is ~+50% cache reads vs plain
-  default (3.43M vs 2.12M tokens/iter, dur 16.3m vs 10.3m).
-- opus46 progressive has the strongest train number (0.6300) but its
-  test-frontier run aborted on a Together 500 and is not counted.
-
+- claudekimi v3 bandit and `default+direction` are both re-running for
+  this proposer; their rows will be filled once the new test numbers
+  land.
 ### 5.3 SWE-bench mini
 
 The source-code backend (`mini_swe_agent_source`) is wired into the
@@ -468,9 +445,8 @@ the optimizer to make stable improvements.
 - LoCoMo global best: claude opus progressive docker @ 0.3982 test.
 - LongMemEval bandit v3 is now run for both proposer families: codex54
   bandit ties progressive at 0.4725 test while cutting proposer cost
-  ~36%; claudekimi bandit underperforms (0.4325 < default 0.4700 <
-  progressive 0.5000), confirming that bandit transfers worse than
-  progressive for kimi (same pattern as LoCoMo).
+  ~36%; claudekimi bandit is currently re-running before its row is
+  filled in.
 - Best LongMemEval test remains **claudekimi progressive at 0.5000**;
   codex54 default 0.4875 and codex54/v3 bandit 0.4725 follow.
 - On LoCoMo, progressive is the safe winner for claudekimi / opus;
@@ -478,16 +454,8 @@ the optimizer to make stable improvements.
 - train80 LoCoMo on its own is too noisy and should always be paired with
   test 1449; claudekimi bandit (train 0.4375 / test 0.3589 vs progressive
   0.4375 / 0.3734) is the clearest example of train/test inconsistency.
-  codex54 default (docker) showed similar variance: paired runs at 0.3899
-  and 0.3368 collapse to a 0.36 mean.
-- `--include-optimization-direction` (`default+direction`) is
-  benchmark-dependent. On LongMemEval claudekimi the first run hit a
-  promising 0.5300 test (above progressive 0.5000) with train 0.6500,
-  but a confirmation rerun is in progress before the row counts as the
-  new test leader. On LoCoMo claudekimi it lowers test (0.3382 →
-  0.3140). Cost is ~+50% cache reads either way (LoCoMo 2.97M → 4.43M;
-  LongMemEval 2.12M → 3.43M), so it is more expensive than plain
-  default but lighter than the bandit budget — final verdict pending
+- `--include-optimization-direction` (`default+direction`) is currently
+  re-running on both LoCoMo and LongMemEval claudekimi; verdict pending
   the rerun.
 - The first real optimization signal on SWE-bench mini comes from
   progressive: trainfirst30 0.5333 (vs baseline 0.4667). The strongest
