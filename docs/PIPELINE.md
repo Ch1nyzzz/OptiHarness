@@ -34,6 +34,46 @@ Docker sandbox mounted at `/workspace/`; it cannot see the repository root,
 the raw benchmark data, or the scoring helpers — those paths are blocked by
 `access_policy.json`.
 
+### 0.1 Per-policy prompt differences
+
+All three policies share the same builder
+(`build_progressive_proposer_prompt` in
+`src/memomemo/proposer_prompt.py`). The base prompt is identical across
+policies — assignment header, objective, available files, edit scope,
+quality gate, and the `pending_eval.json` output schema. Three blocks are
+**conditionally injected** based on `selection_policy`:
+
+| Block | default | progressive | bandit |
+|---|---|---|---|
+| Base prompt (assignment / objective / files / schema) | ✓ | ✓ | ✓ |
+| **Optimization Focus** (mechanism direction list) | ✓ if `optimization_directions` is set | ✓ | ✓ |
+| **Reference role note** (best iteration(s) / worst iteration) | — | ✓ progressive state | ✓ bandit state |
+| **Bandit Context Policy** (Hot / Other tracked files, `trace_scope`) | — | — | ✓ |
+
+Concrete contents per policy:
+
+- **default** — base prompt only. The reference iteration list is the full
+  history; no best/worst roles are distinguished. Optimization Focus
+  appears only if `optimization_directions` is non-empty (the memgpt /
+  mini-swe-agent presets always pass one).
+- **progressive** — adds a one-line *Progressive reference roles* note.
+  For `low`/`medium` budget it explicitly lists the best iter(s) (top-k
+  by passrate) and the worst iter so the proposer can imitate one and
+  avoid the other; for `high` budget it points the proposer at the
+  cumulative summaries to identify best/worst itself.
+- **bandit** — adds (a) the *Bandit reference roles* note built from the
+  bandit state's best/worst iters, plus (b) a full **Bandit Context
+  Policy** block that lists `Hot files to inspect first`
+  (core_files + top-8 by `policy_score`), `Other tracked files`
+  (next-12 by `policy_score`), and the `trace_scope` derived from the
+  budget. The hot/warm lists are explicitly framed as advisory — the
+  proposer is told it may still read other files if they fill a
+  diagnostic gap.
+
+Reference iteration count and `trace_scope` depth are decided **before**
+the prompt is built, by each policy's selection logic in `optimizer.py`
+(see §1–§3). The prompt builder only formats whatever the policy chose.
+
 ---
 
 ## 1. Default Policy (fixed-high baseline)
