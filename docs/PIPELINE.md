@@ -44,12 +44,12 @@ quality gate, and the `pending_eval.json` output schema. Three blocks are
 **conditionally injected** based on `selection_policy` and the
 `adaptive` flag passed by `optimizer.py`:
 
-| Block | default | progressive | bandit |
-|---|---|---|---|
-| Base prompt (assignment / objective / files / schema) | ✓ | ✓ | ✓ |
-| **Optimization Focus** (mechanism direction list) | — | ✓ | ✓ |
-| **Reference role note** (best iteration(s) / worst iteration) | — | ✓ progressive state | ✓ bandit state |
-| **Bandit Context Policy** (Hot / Other tracked files, `trace_scope`) | — | — | ✓ |
+| Block | default | default+direction | progressive | bandit |
+|---|---|---|---|---|
+| Base prompt (assignment / objective / files / schema) | ✓ | ✓ | ✓ | ✓ |
+| **Optimization Focus** (mechanism direction list) | — | ✓ | ✓ | ✓ |
+| **Reference role note** (best iteration(s) / worst iteration) | — | — | ✓ progressive state | ✓ bandit state |
+| **Bandit Context Policy** (Hot / Other tracked files, `trace_scope`) | — | — | — | ✓ |
 
 Why the Optimization Focus row distinguishes default from
 progressive/bandit: in `LocomoOptimizer.run()` the call site sets
@@ -57,9 +57,14 @@ progressive/bandit: in `LocomoOptimizer.run()` the call site sets
 (`optimizer.py:227`), and inside `_run_progressive_proposer_iteration`
 the `optimization_directions` argument is filled by
 `self._optimization_direction_lines(...)` only when `adaptive` is true
-(`optimizer.py:354-358`). default therefore receives an empty tuple, so
-the `## Optimization Focus` heading is suppressed entirely — default sees
-no mechanism direction list at all.
+**or** when the new `--include-optimization-direction` CLI flag
+(`OptimizerConfig.include_optimization_direction`, default `False`) is
+set (`optimizer.py:354-358`). default with the flag off receives an empty
+tuple, so the `## Optimization Focus` heading is suppressed entirely;
+default with the flag on (the `default+direction` column above) keeps
+default's fixed-high context schedule but injects the same direction
+list as progressive/bandit, isolating the contribution of the focus
+block from the budget heuristic.
 
 Concrete contents per policy:
 
@@ -113,6 +118,20 @@ state is ever read or written.
   / edit scope / quality gate / output schema. See §0.1 for the
   per-policy block matrix.
 - Serves as a sanity baseline for progressive / bandit.
+
+**`default+direction` ablation** (`--include-optimization-direction`):
+keep default's fixed-high context schedule but inject the same
+Optimization Focus mechanism direction list as progressive/bandit. The
+flag flips
+`OptimizerConfig.include_optimization_direction = True`; the rest of the
+default decision logic is unchanged. Use this to measure whether the
+direction block alone (without the budget tiering or the bandit
+file-utility prior) lifts test passrate. On LoCoMo this ablation
+*reduces* test (claudekimi default 0.3382 → default+direction 0.3140,
+see EXPERIMENT_RESULTS.md §LoCoMo) while inflating cache reads
+(2.97M → 4.43M tokens/iter); on LongMemEval it *boosts train* (claudekimi
+0.5600 → 0.6500) but the test number is still pending a Together-judge
+retry.
 
 ---
 
@@ -337,12 +356,17 @@ because no v3-era bandit run was completed on opus.
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — | — |
+| claudekimi | default (no docker) | 0.4000 | 0.3409 | — | — | — | — | — | — | — |
+| claudekimi | default (docker, 1st) | 0.4125 | 0.3382 | 136.4k | 26.8k | 2.97M | 3.13M | 45.8 | 19.9 | 12.3m |
+| claudekimi | default (docker, rerun) | running | running | — | — | — | — | — | — | — |
+| claudekimi | default+direction (docker) | 0.3875 | 0.3140 | 170.1k | 28.3k | 4.43M | 4.63M | 54.8 | 19.9 | 16.3m |
 | claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 1.86M | 35.2 | 15.1 | 13.0m |
 | claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 1.96M | 35.1 | 17.6 | 14.1m |
 | claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — | — |
 | claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 2.11M | 61.2 | 20.7 | 8.9m |
-| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — | — |
+| codex54 | default (no docker) | 0.4125 | 0.3471 | — | — | — | — | — | — | — |
+| codex54 | default (docker, 1st) | 0.4500 | 0.3899 | 1.34M | 25.2k | 1.23M | 2.60M | 31.2 | 17.1 | 8.5m |
+| codex54 | default (docker, rerun) | 0.4375 | 0.3368 | 1.45M | 23.9k | 1.33M | 2.80M | 33.9 | 16.8 | 8.0m |
 | codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 4.66M | 50.6 | 16.9 | 7.1m |
 | codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 2.14M | 34.6 | 18.5 | 7.0m |
 
@@ -354,23 +378,55 @@ Highlights:
   only bandit result on any proposer that beats progressive.
 - bandit nearly halves codex54's input cost (input/iter 2.39M → 1.13M)
   with no test regression.
+- **codex54 default (docker) is high-variance**: paired runs landed at
+  0.3899 and 0.3368, mean ≈0.363 — close to the historical no-docker
+  default (0.3471) and below progressive/bandit. The 0.3899 reading is
+  treated as upper-tail noise rather than a docker effect.
+- **`default+direction` ablation (`--include-optimization-direction`)
+  hurts test on LoCoMo claudekimi**: 0.3382 → 0.3140 with cache reads
+  ballooning 2.97M → 4.43M. Mechanism direction lines without the
+  budget-tier or bandit utility gating do not help here, suggesting that
+  the policy block (not the focus block) is what unlocks
+  progressive/bandit's gains over default on LoCoMo.
 
 ### 5.2 LongMemEval (train=100, test=400)
 
-No bandit run was completed on LongMemEval, so the bandit column is
-omitted. opus46 default is not reported (no completed run).
+opus46 default is not reported (no completed run). bandit rows use the
+v3 sliding-window z-score reward (window=16, passrate-only).
+`default+direction` rows use the new `--include-optimization-direction`
+flag.
 
 | proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 1.57M | 61.3 | 20.0 | 7.2m |
 | claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 2.27M | 39.6 | 18.4 | 10.3m |
-| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
+| claudekimi | progressive | **0.6000** | **0.5000** ★ | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
+| claudekimi | bandit (docker, v3) | 0.5300 | 0.4325 | 152.9k | 27.9k | 3.28M | 3.46M | 44.4 | 20.0 | 14.3m |
+| claudekimi | default+direction (1st) | 0.6500 | 0.5300 | 176.0k | 30.2k | 3.43M | 3.63M | 49.6 | 18.6 | 16.3m |
+| claudekimi | default+direction (rerun) | running | running | — | — | — | — | — | — | — |
 | codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 3.41M | 33.4 | 18.8 | 9.5m |
 | codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 2.80M | 31.9 | 17.0 | 8.3m |
+| codex54 | bandit (docker, v3) | 0.5200 | 0.4725 | 1.13M | 24.6k | 1.03M | 2.18M | 34.8 | 19.0 | 8.1m |
 
-Takeaway: claudekimi progressive leads test at 0.5000; codex54 default is
-second at 0.4875. opus46 has the strongest train number (0.6300) but its
-test-frontier run aborted on a Together 500 and is not counted.
+Takeaways:
+
+- claudekimi progressive leads test at **0.5000**; codex54 default and
+  codex54 v3 bandit tie for second at 0.4875 / 0.4725.
+- **codex54 v3 bandit cuts proposer cost ~36%** (input/iter 1.77M →
+  1.13M, total/iter 3.41M → 2.18M, dur/iter 9.5m → 8.1m) for only −1.5pt
+  test passrate vs default. Same cost-reduction pattern as LoCoMo
+  codex54 bandit.
+- claudekimi v3 bandit (test 0.4325) underperforms claudekimi default
+  (0.4700) and progressive (0.5000), repeating the LoCoMo pattern that
+  the bandit policy transfers worse than progressive for the kimi
+  proposer family.
+- `default+direction` first run on LongMemEval claudekimi hit train
+  0.6500 / test 0.5300 (above progressive 0.5000) — promising but
+  unconfirmed; a same-config rerun is in progress before this is
+  treated as the new test leader. Cost is ~+50% cache reads vs plain
+  default (3.43M vs 2.12M tokens/iter, dur 16.3m vs 10.3m).
+- opus46 progressive has the strongest train number (0.6300) but its
+  test-frontier run aborted on a Together 500 and is not counted.
 
 ### 5.3 SWE-bench mini
 
@@ -388,8 +444,8 @@ source baseline.
 | claudekimi | bandit (fixedsource) | DeepSeek v4 Flash | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 3.51M | 56.6 | 25.5 | 12.2m |
 
 DeepSeek bandit reaches the same 0.5333 ceiling as mimo progressive on the
-same pool; its candidate was not promoted to verified_full500. The more
-important signal is the full DeepSeek v4 Flash evaluation on the 500-problem
+same trainfirst30 pool. The tied bandit frontier candidates were later
+promoted to the full DeepSeek v4 Flash evaluation on the 500-problem
 verified set (a candidate-level eval, not a (proposer, policy)
 optimization row):
 
@@ -397,25 +453,45 @@ optimization row):
 |-------------------------------------------------------------------------|-------------:|------------:|
 | source baseline                                                         | 220 / 500    | 0.4400      |
 | default optimized (`iter002_stack_trace_context`)                       | 229 / 500    | 0.4580      |
-| progressive optimized (`iter016_final_fallback_traceback_retrieval_v1`) | 310 / 500    | **0.6200**  |
+| progressive optimized (`iter016_final_fallback_traceback_retrieval_v1`) | 310 / 500    | 0.6200      |
+| bandit fixedsource optimized (`iter013_impact_aware_feedback`)          | 320 / 500    | **0.6400**  |
 
-The progressive-optimized candidate beats the source baseline by +18.0
-percentage points on full verified — currently the strongest SWE-bench
-result. verified_test10 (10 problems) is too small and saturates too
-quickly for the optimizer to make stable improvements.
+The bandit fixedsource `iter013_impact_aware_feedback` candidate beats the
+source baseline by +20.0 percentage points on full verified, and is the
+current strongest SWE-bench result. Full frontier results are in
+`runs/swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_fixedsource_iter20_trainfirst30_w10_t900_20260430_233750/test_frontier/test_results.json`.
+verified_test10 (10 problems) is too small and saturates too quickly for
+the optimizer to make stable improvements.
 
 ### 5.4 Overall takeaways
 
 - LoCoMo global best: claude opus progressive docker @ 0.3982 test.
-- LongMemEval has no completed bandit run; progressive (claudekimi 0.5000)
-  and default (codex54 0.4875) lead test.
+- LongMemEval bandit v3 is now run for both proposer families: codex54
+  bandit ties progressive at 0.4725 test while cutting proposer cost
+  ~36%; claudekimi bandit underperforms (0.4325 < default 0.4700 <
+  progressive 0.5000), confirming that bandit transfers worse than
+  progressive for kimi (same pattern as LoCoMo).
+- Best LongMemEval test remains **claudekimi progressive at 0.5000**;
+  codex54 default 0.4875 and codex54/v3 bandit 0.4725 follow.
 - On LoCoMo, progressive is the safe winner for claudekimi / opus;
   codex54 is the only family that benefits from the bandit policy.
 - train80 LoCoMo on its own is too noisy and should always be paired with
   test 1449; claudekimi bandit (train 0.4375 / test 0.3589 vs progressive
   0.4375 / 0.3734) is the clearest example of train/test inconsistency.
+  codex54 default (docker) showed similar variance: paired runs at 0.3899
+  and 0.3368 collapse to a 0.36 mean.
+- `--include-optimization-direction` (`default+direction`) is
+  benchmark-dependent. On LongMemEval claudekimi the first run hit a
+  promising 0.5300 test (above progressive 0.5000) with train 0.6500,
+  but a confirmation rerun is in progress before the row counts as the
+  new test leader. On LoCoMo claudekimi it lowers test (0.3382 →
+  0.3140). Cost is ~+50% cache reads either way (LoCoMo 2.97M → 4.43M;
+  LongMemEval 2.12M → 3.43M), so it is more expensive than plain
+  default but lighter than the bandit budget — final verdict pending
+  the rerun.
 - The first real optimization signal on SWE-bench mini comes from
-  progressive: trainfirst30 0.5333 (vs baseline 0.4667), and DeepSeek
-  Flash full500 0.6200 (vs baseline 0.4400).
+  progressive: trainfirst30 0.5333 (vs baseline 0.4667). The strongest
+  full verified result is now DeepSeek Flash bandit fixedsource at
+  0.6400 (vs baseline 0.4400).
 - All progressive / bandit results above use the docker sandbox;
   non-docker results are not counted.
