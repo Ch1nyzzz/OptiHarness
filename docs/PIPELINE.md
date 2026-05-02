@@ -41,29 +41,44 @@ All three policies share the same builder
 `src/memomemo/proposer_prompt.py`). The base prompt is identical across
 policies — assignment header, objective, available files, edit scope,
 quality gate, and the `pending_eval.json` output schema. Three blocks are
-**conditionally injected** based on `selection_policy`:
+**conditionally injected** based on `selection_policy` and the
+`adaptive` flag passed by `optimizer.py`:
 
 | Block | default | progressive | bandit |
 |---|---|---|---|
 | Base prompt (assignment / objective / files / schema) | ✓ | ✓ | ✓ |
-| **Optimization Focus** (mechanism direction list) | ✓ if `optimization_directions` is set | ✓ | ✓ |
+| **Optimization Focus** (mechanism direction list) | — | ✓ | ✓ |
 | **Reference role note** (best iteration(s) / worst iteration) | — | ✓ progressive state | ✓ bandit state |
 | **Bandit Context Policy** (Hot / Other tracked files, `trace_scope`) | — | — | ✓ |
 
+Why the Optimization Focus row distinguishes default from
+progressive/bandit: in `LocomoOptimizer.run()` the call site sets
+`adaptive=self.config.selection_policy in {"progressive", "bandit"}`
+(`optimizer.py:227`), and inside `_run_progressive_proposer_iteration`
+the `optimization_directions` argument is filled by
+`self._optimization_direction_lines(...)` only when `adaptive` is true
+(`optimizer.py:354-358`). default therefore receives an empty tuple, so
+the `## Optimization Focus` heading is suppressed entirely — default sees
+no mechanism direction list at all.
+
 Concrete contents per policy:
 
-- **default** — base prompt only. The reference iteration list is the full
-  history; no best/worst roles are distinguished. Optimization Focus
-  appears only if `optimization_directions` is non-empty (the memgpt /
-  mini-swe-agent presets always pass one).
-- **progressive** — adds a one-line *Progressive reference roles* note.
-  For `low`/`medium` budget it explicitly lists the best iter(s) (top-k
-  by passrate) and the worst iter so the proposer can imitate one and
-  avoid the other; for `high` budget it points the proposer at the
-  cumulative summaries to identify best/worst itself.
-- **bandit** — adds (a) the *Bandit reference roles* note built from the
-  bandit state's best/worst iters, plus (b) a full **Bandit Context
-  Policy** block that lists `Hot files to inspect first`
+- **default** — base prompt only. The reference iteration list is the
+  full history; no best/worst roles are distinguished, and no mechanism
+  direction list is provided. The proposer reads the cumulative
+  summaries cold and decides what to try.
+- **progressive** — adds (a) the **Optimization Focus** block populated
+  from `_optimization_direction_lines(target_system)` (4 cells for the
+  memgpt scaffold, 5 for mini-swe-agent), and (b) a one-line
+  *Progressive reference roles* note. For `low`/`medium` budget the
+  note explicitly lists the best iter(s) (top-k by passrate) and the
+  worst iter so the proposer can imitate one and avoid the other; for
+  `high` budget it points the proposer at the cumulative summaries to
+  identify best/worst itself.
+- **bandit** — adds the same Optimization Focus block as progressive,
+  plus (a) a *Bandit reference roles* note built from the bandit
+  state's best/worst iters, plus (b) a full **Bandit Context Policy**
+  block that lists `Hot files to inspect first`
   (core_files + top-8 by `policy_score`), `Other tracked files`
   (next-12 by `policy_score`), and the `trace_scope` derived from the
   budget. The hot/warm lists are explicitly framed as advisory — the
@@ -91,6 +106,12 @@ state is ever read or written.
 - Largest context and highest cost per iteration (cache miss + long prompt +
   full copies of every reference iteration).
 - No feedback loop: the proposer always sees the same global view.
+- Bare prompt: `adaptive=False` is passed to the prompt builder, so
+  default does **not** receive the Optimization Focus block, the
+  Progressive role hints, or the Bandit Context Policy block. It sees
+  only the shared base prompt — assignment / objective / available files
+  / edit scope / quality gate / output schema. See §0.1 for the
+  per-policy block matrix.
 - Serves as a sanity baseline for progressive / bandit.
 
 ---
@@ -282,7 +303,7 @@ cannot demote essential files into warm/cold.
 | Budget selection       | always `high`        | state machine (`low`→…→`high`)               | heuristic + stagnation threshold (`low/medium/high`) |
 | Reference iterations   | full history         | by budget: best k + worst                    | iters where hot files appeared, fallback to best3 / last_improved |
 | Trace-scope trim       | `all`                | `last1 / last3 / all`                        | same three tiers, derived from budget                |
-| Prompt extras          | Optimization Focus   | + Progressive role hints                     | + Bandit Context Policy (hot/warm lists)             |
+| Prompt extras          | base prompt only     | + Optimization Focus + Progressive role hints | + Optimization Focus + Bandit role hints + Bandit Context Policy (hot/warm lists) |
 | Feedback signal        | none                 | did this iter enter a new frontier?          | rolling-window z-score (passrate only)               |
 | State file             | none                 | `progressive_state.json`                     | `bandit_state.json` (per-file stats)                 |
 | Explore vs exploit     | none (always max)    | implicit (only escalates on stagnation)      | explicit (UCB bonus + Beta smoothing)                |
