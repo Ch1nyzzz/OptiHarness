@@ -47,43 +47,9 @@ averaged over `proposer_calls/*/agent/metrics.json` of the train run:
 A `—` cell means cost data is unavailable: the train-run directory was
 deleted and only the test-eval dir remains. Bold cells flag the strongest
 test result within each proposer family (with the matching train cell also
-bolded); ★ marks an overall benchmark best.
-
-## Overall proposer cost
-
-Aggregated across every proposer iteration in the cost-bearing train runs
-below — 355 iterations from 13 runs spanning LoCoMo, LongMemEval, and
-SWE-bench mini. Test-eval and candidate-eval runs are not included
-(no proposer is invoked there). The OVERALL row averages every iteration
-uniformly; per-family rows split by proposer model since input-token
-profiles differ by an order of magnitude across vendors.
-
-| aggregate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | read calls/iter | read lines/iter | dur/iter |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| OVERALL | 355 | 622.3k | 24.5k | 1.98M | 44.4 | 19.0 | 27.0 | 4,065 | 10.0m |
-| claudekimi (7 runs) | 178 | 123.4k | 27.3k | 2.34M | 43.2 | 19.3 | 26.6 | 4,450 | 12.1m |
-| opus / opus46 (2 runs) | 60 | 2.4k | 18.9k | 1.74M | 61.3 | 20.3 | 35.6 | 5,677 | 8.0m |
-| codex54 (4 runs) | 117 | 1.70M | 23.0k | 1.56M | 37.7 | 17.8 | 23.3 | 2,654 | 8.0m |
-
-Reading this:
-
-- `input/iter` skews enormously by proposer family — codex54 ships
-  reasoning inline (1.70M new input/iter), opus rides the prompt cache
-  (2.4k new input/iter, almost everything in cache), and claudekimi sits
-  at ~123k. The OVERALL number (622k) is essentially "(codex54 share) ×
-  (codex54 input) + (other shares) × (other inputs)" and shouldn't be
-  read as typical per-proposer cost on its own.
-- `output/iter` is much steadier (19k–27k) — most of the variance is in
-  how much context the proposer demands, not in the size of the diff it
-  emits.
-- `cache reads/iter` (1.56M–2.34M) dwarfs new input across families; the
-  prompt cache is where most of the workspace context is reused.
-- `tools/iter` and `files/iter` are highest for opus (61.3 / 20.3) — opus
-  reads more files per iteration to keep cached context useful, and
-  claudekimi tracks similarly. codex54 issues fewer tool calls per iter
-  because more reasoning happens before the first tool use.
-- `dur/iter` clusters at ~8m for opus / codex54 and ~12m for claudekimi
-  (claudekimi wraps each iteration in a longer agent loop).
+bolded); ★ marks an overall benchmark best. The `total/iter` column is
+the sum of new input + output + cache reads per proposer iteration — the
+gross token volume that flows through the proposer per call.
 
 ## LoCoMo
 
@@ -91,16 +57,16 @@ LoCoMo train uses 80 examples; test uses the full 1,449 examples.
 Progressive and bandit runs use the docker proposer sandbox. Default runs
 predate the docker sandbox and are kept as baselines.
 
-| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — |
-| claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 35.2 | 15.1 | 13.0m |
-| claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 35.1 | 17.6 | 14.1m |
-| claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — |
-| claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 61.2 | 20.7 | 8.9m |
-| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — |
-| codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 50.6 | 16.9 | 7.1m |
-| codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 34.6 | 18.5 | 7.0m |
+| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — | — |
+| claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 1.86M | 35.2 | 15.1 | 13.0m |
+| claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 1.96M | 35.1 | 17.6 | 14.1m |
+| claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — | — |
+| claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 2.11M | 61.2 | 20.7 | 8.9m |
+| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — | — |
+| codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 4.66M | 50.6 | 16.9 | 7.1m |
+| codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 2.14M | 34.6 | 18.5 | 7.0m |
 
 claude opus has no bandit row because no v3-era bandit run was completed on
 opus (earlier bandit variants are not retained). Iteration counts behind the
@@ -159,13 +125,13 @@ hanging; its last completed status is a Together judge 500 error. No
 bandit run was completed on LongMemEval, so the bandit column is omitted.
 opus46 default is not reported (no completed run).
 
-| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 61.3 | 20.0 | 7.2m |
-| claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 39.6 | 18.4 | 10.3m |
-| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 33.6 | 16.3 | 9.5m |
-| codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 33.4 | 18.8 | 9.5m |
-| codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 31.9 | 17.0 | 8.3m |
+| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 1.57M | 61.3 | 20.0 | 7.2m |
+| claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 2.27M | 39.6 | 18.4 | 10.3m |
+| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
+| codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 3.41M | 33.4 | 18.8 | 9.5m |
+| codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 2.80M | 31.9 | 17.0 | 8.3m |
 
 All cost rows average over 30 iterations.
 
@@ -238,10 +204,10 @@ reported on the same 30-task pool as a "best optimizer candidate" against
 the source baseline. No bandit run has been completed on this pool with
 mimo v2.5.
 
-| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 56.0 | 23.2 | 13.4m |
-| claudekimi | progressive | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 61.0 | 23.6 | 12.5m |
+| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 3.22M | 56.0 | 23.2 | 13.4m |
+| claudekimi | progressive | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 3.78M | 61.0 | 23.6 | 12.5m |
 
 Best optimizer candidates: default → `iter002_stack_trace_context` (and 4
 ties at 0.5000); progressive → `iter016_final_fallback_traceback_retrieval_v1`.
@@ -280,9 +246,9 @@ passrate-only z-score reward (window=16). 20 proposer iter dirs exist
 but `iter_020` is missing its `metrics.json` (interrupted), so cost
 averages over the first 19.
 
-| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | bandit (fixedsource) | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 56.6 | 25.5 | 12.2m |
+| proposer | policy | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | bandit (fixedsource) | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 3.51M | 56.6 | 25.5 | 12.2m |
 
 Notes:
 
@@ -300,8 +266,8 @@ Notes:
   (`swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_iter20_trainfirst30_w10_t900_promptcells_20260430_200058`)
   only completed 6 iterations and never beat the source baseline (best
   0.5000 = baseline). Its averaged cost (104.2k input / 29.4k output /
-  2.53M cache reads / 54.5 tools / 27.8 files / 10.8m per iter, n=6) is
-  not retained as a result row.
+  2.53M cache reads / 2.66M total / 54.5 tools / 27.8 files / 10.8m per
+  iter, n=6) is not retained as a result row.
 - Cache reads (3.35M/iter) are the largest of any benchmark/policy combo
   so far — DeepSeek v4 Flash with mini-SWE-agent context plus the bandit
   policy meta produces an unusually wide cached prompt.

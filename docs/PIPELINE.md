@@ -261,29 +261,11 @@ hit reused across turns; `tools/iter` is tool-use calls per iteration;
 `files/iter` is unique workspace files opened per iteration. A `—` cell
 means cost data is unavailable (the train-run dir was deleted, only the
 test-eval dir remains). Bold cells flag the strongest result within each
-proposer family; ★ marks the overall benchmark best. See
-[`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md) for run paths and
-extended notes.
-
-#### Overall proposer cost (across every cost-bearing train run)
-
-Aggregated across 355 proposer iterations from the 13 cost-bearing train
-runs in §5.1–§5.3. The OVERALL number is a uniform mean over every
-iteration; per-family rows split by proposer model because input-token
-profiles differ by an order of magnitude.
-
-| aggregate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| OVERALL | 355 | 622.3k | 24.5k | 1.98M | 44.4 | 19.0 | 10.0m |
-| claudekimi (7 runs) | 178 | 123.4k | 27.3k | 2.34M | 43.2 | 19.3 | 12.1m |
-| opus / opus46 (2 runs) | 60 | 2.4k | 18.9k | 1.74M | 61.3 | 20.3 | 8.0m |
-| codex54 (4 runs) | 117 | 1.70M | 23.0k | 1.56M | 37.7 | 17.8 | 8.0m |
-
-`input/iter` skews enormously by proposer family — codex54 ships reasoning
-inline (1.70M new input/iter), opus rides the prompt cache (2.4k new
-input/iter), claudekimi sits at ~123k. The OVERALL row is dominated by
-codex54's share. `output/iter` (19k–27k) and `dur/iter` (8–12m) are much
-steadier.
+proposer family; ★ marks the overall benchmark best. The `total/iter`
+column is the sum of new input + output + cache reads per proposer
+iteration — the gross token volume that flows through the proposer per
+call. See [`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md) for run
+paths and extended notes.
 
 ### 5.1 LoCoMo (train=80, test=1449)
 
@@ -292,16 +274,16 @@ passrate-only reward for claudekimi, mixed reward for codex54). Earlier
 bandit variants (v1, v2) are not retained. claude opus has no bandit row
 because no v3-era bandit run was completed on opus.
 
-| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — |
-| claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 35.2 | 15.1 | 13.0m |
-| claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 35.1 | 17.6 | 14.1m |
-| claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — |
-| claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 61.2 | 20.7 | 8.9m |
-| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — |
-| codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 50.6 | 16.9 | 7.1m |
-| codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 34.6 | 18.5 | 7.0m |
+| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | 0.4000 | 0.3409 | — | — | — | — | — | — | — |
+| claudekimi | progressive (docker) | **0.4375** | **0.3734** | 138.9k | 25.5k | 1.70M | 1.86M | 35.2 | 15.1 | 13.0m |
+| claudekimi | bandit (docker) | 0.4375 | 0.3589 | 104.2k | 29.8k | 1.83M | 1.96M | 35.1 | 17.6 | 14.1m |
+| claude opus | default | 0.3875 | 0.3306 | — | — | — | — | — | — | — |
+| claude opus | progressive (docker) | **0.4750** | **0.3982** ★ | 3.1k | 20.6k | 1.99M | 2.11M | 61.2 | 20.7 | 8.9m |
+| codex54 | default | 0.4125 | 0.3471 | — | — | — | — | — | — | — |
+| codex54 | progressive (docker) | 0.4250 | 0.3589 | 2.39M | 18.7k | 2.25M | 4.66M | 50.6 | 16.9 | 7.1m |
+| codex54 | bandit (docker) | **0.4250** | **0.3865** | 1.13M | 20.7k | 995k | 2.14M | 34.6 | 18.5 | 7.0m |
 
 Highlights:
 
@@ -317,13 +299,13 @@ Highlights:
 No bandit run was completed on LongMemEval, so the bandit column is
 omitted. opus46 default is not reported (no completed run).
 
-| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 61.3 | 20.0 | 7.2m |
-| claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 39.6 | 18.4 | 10.3m |
-| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 33.6 | 16.3 | 9.5m |
-| codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 33.4 | 18.8 | 9.5m |
-| codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 31.9 | 17.0 | 8.3m |
+| proposer | policy | train | test | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claude opus46 | progressive | **0.6300** | failed: Together 500 | 1.7k | 17.3k | 1.48M | 1.57M | 61.3 | 20.0 | 7.2m |
+| claudekimi | default | 0.5600 | 0.4700 | 121.5k | 26.9k | 2.12M | 2.27M | 39.6 | 18.4 | 10.3m |
+| claudekimi | progressive | **0.6000** | **0.5000** | 105.0k | 25.0k | 1.73M | 1.86M | 33.6 | 16.3 | 9.5m |
+| codex54 | default | **0.6000** | **0.4875** | 1.77M | 27.4k | 1.61M | 3.41M | 33.4 | 18.8 | 9.5m |
+| codex54 | progressive (rerun) | 0.5400 | 0.4725 | 1.45M | 25.0k | 1.33M | 2.80M | 31.9 | 17.0 | 8.3m |
 
 Takeaway: claudekimi progressive leads test at 0.5000; codex54 default is
 second at 0.4875. opus46 has the strongest train number (0.6300) but its
@@ -338,11 +320,11 @@ trainfirst30 pool: mimo v2.5 (default + progressive) and DeepSeek v4 Flash
 passrate is reported on the same 30-task pool against each solver's
 source baseline.
 
-| proposer | policy | solver | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| claudekimi | default | mimo v2.5 | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 56.0 | 23.2 | 13.4m |
-| claudekimi | progressive | mimo v2.5 | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 61.0 | 23.6 | 12.5m |
-| claudekimi | bandit (fixedsource) | DeepSeek v4 Flash | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 56.6 | 25.5 | 12.2m |
+| proposer | policy | solver | source baseline | best passrate | iters | input/iter | output/iter | cache reads/iter | total/iter | tools/iter | files/iter | dur/iter |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claudekimi | default | mimo v2.5 | 0.4667 | **0.5000** | 20/30 | 136.3k | 28.6k | 3.06M | 3.22M | 56.0 | 23.2 | 13.4m |
+| claudekimi | progressive | mimo v2.5 | 0.4000 | **0.5333** | 20/30 | 141.8k | 29.7k | 3.61M | 3.78M | 61.0 | 23.6 | 12.5m |
+| claudekimi | bandit (fixedsource) | DeepSeek v4 Flash | 0.5000 | **0.5333** | 19/20 | 128.9k | 26.1k | 3.35M | 3.51M | 56.6 | 25.5 | 12.2m |
 
 DeepSeek bandit reaches the same 0.5333 ceiling as mimo progressive on the
 same pool; its candidate was not promoted to verified_full500. The more
