@@ -265,6 +265,26 @@ proposer family; ★ marks the overall benchmark best. See
 [`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md) for run paths and
 extended notes.
 
+#### Overall proposer cost (across every cost-bearing train run)
+
+Aggregated across 355 proposer iterations from the 13 cost-bearing train
+runs in §5.1–§5.3. The OVERALL number is a uniform mean over every
+iteration; per-family rows split by proposer model because input-token
+profiles differ by an order of magnitude.
+
+| aggregate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | dur/iter |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| OVERALL | 355 | 622.3k | 24.5k | 1.98M | 44.4 | 19.0 | 10.0m |
+| claudekimi (7 runs) | 178 | 123.4k | 27.3k | 2.34M | 43.2 | 19.3 | 12.1m |
+| opus / opus46 (2 runs) | 60 | 2.4k | 18.9k | 1.74M | 61.3 | 20.3 | 8.0m |
+| codex54 (4 runs) | 117 | 1.70M | 23.0k | 1.56M | 37.7 | 17.8 | 8.0m |
+
+`input/iter` skews enormously by proposer family — codex54 ships reasoning
+inline (1.70M new input/iter), opus rides the prompt cache (2.4k new
+input/iter), claudekimi sits at ~123k. The OVERALL row is dominated by
+codex54's share. `output/iter` (19k–27k) and `dur/iter` (8–12m) are much
+steadier.
+
 ### 5.1 LoCoMo (train=80, test=1449)
 
 The bandit row is the latest sliding-window z-score variant (window=16;

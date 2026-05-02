@@ -49,6 +49,42 @@ deleted and only the test-eval dir remains. Bold cells flag the strongest
 test result within each proposer family (with the matching train cell also
 bolded); ★ marks an overall benchmark best.
 
+## Overall proposer cost
+
+Aggregated across every proposer iteration in the cost-bearing train runs
+below — 355 iterations from 13 runs spanning LoCoMo, LongMemEval, and
+SWE-bench mini. Test-eval and candidate-eval runs are not included
+(no proposer is invoked there). The OVERALL row averages every iteration
+uniformly; per-family rows split by proposer model since input-token
+profiles differ by an order of magnitude across vendors.
+
+| aggregate | iters | input/iter | output/iter | cache reads/iter | tools/iter | files/iter | read calls/iter | read lines/iter | dur/iter |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| OVERALL | 355 | 622.3k | 24.5k | 1.98M | 44.4 | 19.0 | 27.0 | 4,065 | 10.0m |
+| claudekimi (7 runs) | 178 | 123.4k | 27.3k | 2.34M | 43.2 | 19.3 | 26.6 | 4,450 | 12.1m |
+| opus / opus46 (2 runs) | 60 | 2.4k | 18.9k | 1.74M | 61.3 | 20.3 | 35.6 | 5,677 | 8.0m |
+| codex54 (4 runs) | 117 | 1.70M | 23.0k | 1.56M | 37.7 | 17.8 | 23.3 | 2,654 | 8.0m |
+
+Reading this:
+
+- `input/iter` skews enormously by proposer family — codex54 ships
+  reasoning inline (1.70M new input/iter), opus rides the prompt cache
+  (2.4k new input/iter, almost everything in cache), and claudekimi sits
+  at ~123k. The OVERALL number (622k) is essentially "(codex54 share) ×
+  (codex54 input) + (other shares) × (other inputs)" and shouldn't be
+  read as typical per-proposer cost on its own.
+- `output/iter` is much steadier (19k–27k) — most of the variance is in
+  how much context the proposer demands, not in the size of the diff it
+  emits.
+- `cache reads/iter` (1.56M–2.34M) dwarfs new input across families; the
+  prompt cache is where most of the workspace context is reused.
+- `tools/iter` and `files/iter` are highest for opus (61.3 / 20.3) — opus
+  reads more files per iteration to keep cached context useful, and
+  claudekimi tracks similarly. codex54 issues fewer tool calls per iter
+  because more reasoning happens before the first tool use.
+- `dur/iter` clusters at ~8m for opus / codex54 and ~12m for claudekimi
+  (claudekimi wraps each iteration in a longer agent loop).
+
 ## LoCoMo
 
 LoCoMo train uses 80 examples; test uses the full 1,449 examples.
